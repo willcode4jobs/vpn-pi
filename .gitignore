@@ -1,3 +1,10 @@
+# Secrets — never commit
+*.private
+*_private_key
+*_key
+!*_key.pub
+/prototype/configs/wireguard/*.conf
+!/prototype/configs/wireguard/*.example
 *~
 .*.swp
 .DS_Store
