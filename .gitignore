@@ -5,6 +5,10 @@
 !*_key.pub
 /prototype/configs/wireguard/*.conf
 !/prototype/configs/wireguard/*.example
+
+# Live-system "evidence" — kept on disk for reference, never committed
+prototype/configs/**/*.current
+prototype/configs/**/current.*
 *~
 .*.swp
 .DS_Store
