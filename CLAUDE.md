@@ -1,78 +1,184 @@
-# VPN Pi Project — Claude Code Context
+# CLAUDE.md — SU495 VPN Project
 
-## Project goal
+## What's being built
+WireGuard mesh VPN with IDS-style attack detection. 5-node mesh: master + access/exit + 3 endpoints. Multi-site deployment. Master admin via SSH/CLI (web UI was cut).
 
-Build a WireGuard-based VPN exit node on a Raspberry Pi. A user connects from
-anywhere (Mac, phone, etc.) and their traffic appears to originate from the Pi's
-home network. 250-hour academic project — PSU SU495 internship under
-Dr. Raahemifar. ~12 hours spent as of project start.
+## Architecture (current state, partially in flux)
+- WireGuard (kernel-space) chosen over OpenVPN
+- Full mesh: every node has direct WG tunnels to every other node
+- Control plane is bidirectional (master ↔ all nodes for configs, logs, IDS alerts)
+- Master is co-located with access/exit, NOT in the data path — sees only control traffic, no user payload
+- IDS scope: network + tunnel level only, no application-layer
+- Outbound data flow: endpoint → home router → internet (encrypted) → site router → access/exit Pi (decrypt + NAT) → site router → internet (cleartext) → destination
+- Inbound data flow: external client → internet (encrypted) → site router → access/exit Pi (decrypt + re-encrypt for next tunnel) → destination endpoint. Two-stage encryption because home endpoints have no public IP and can't peer directly with external clients.
 
-## Environment
+## Architecture pivot IN PROGRESS (not yet committed)
+Original: business = public-facing, home = endpoints. Pivoting to: home = public-facing, business = endpoints.
 
-- **Prototype host**: Ubuntu Server 24.04 LTS, running as a VM in VMware Fusion
-  on a macOS host. Reachable via SSH from the Mac. Username: `billyuser`.
-- **Final target**: Raspberry Pi 5 (in shipping), will run Pi OS Lite 64-bit.
-- **Workflow**: User edits via VS Code Remote-SSH from Mac into the VM. Claude
-  Code runs on the VM. All commands assume VM context unless noted.
-- **Git**: GitHub repo, SSH push via agent forwarding from Mac.
+Trigger: office firewall is heavy-duty; inbound port forwarding from office not practical.
 
-## Architecture decisions (do not relitigate)
+Pending verifications:
+- CGNAT at home (whatismyip.com vs home router WAN IP)
+- Office outbound UDP works (test WG handshake from office machine)
+- Endpoint machines/IT policy at office
 
-- **WireGuard, not OpenVPN.** ~4,000 lines of in-kernel code vs. 100k+ userspace
-  daemon. Better crypto defaults (Curve25519, ChaCha20-Poly1305, BLAKE2s).
-  Don't suggest OpenVPN configurations.
-- **Pi OS Lite, not Ubuntu Server, on the eventual Pi.** Lite is purpose-built
-  for the Pi and has a smaller attack surface. Ubuntu Server is fine for the
-  current VM prototype since they're both Debian-family.
-- **Prototype-first, not sandbox-first.** Earlier plan included extensive Linux
-  network namespace labs. Pivoted to building the actual VPN on the prototype
-  VM, since the work transfers cleanly to the Pi and produces real artifacts
-  rather than throwaway plumbing. Existing namespace work lives in
-  `archive/phase1-netns/`.
-- **Hand-written configs, not generators.** `wg0.conf` and `nftables.conf` are
-  written manually so the user understands every line. Don't reach for
-  `wg-easy`, `pivpn`, `wireguard-install`, or similar wrappers.
-- **Hardened by default.** SSH password auth disabled, key-only login,
-  default-deny nftables, fail2ban, unattended-upgrades. Same hardening will
-  apply to the Pi.
+If confirmed: threat model shifts (home now public-facing), DDNS required for residential dynamic IP, all flowcharts need site-label swap, exit IP becomes home IP.
 
-## Repo layout
+## Naming (stars)
+- **polaris** — master ✓ set up, hardening pending first run
+- **vega** — edge (access/exit) — not yet built
+- **sirius, altair, arcturus** — endpoints — not yet built
 
-- `prototype/` — current active work; VM-based VPN build
-- `prototype/configs/` — hand-written configs that will eventually deploy to Pi
-- `prototype/scripts/` — setup, teardown, helpers (all `set -euo pipefail`)
-- `docs/` — architecture, network fundamentals, runbook, work log
-- `pi-deployment/` — placeholder, becomes active when Pi arrives
-- `webui/` — placeholder, becomes active in Phase 6
-- `archive/` — shelved work kept for reference
+## Polaris current state
+- Pi OS 64-bit on Pi 5 8GB
+- User `billy`, hostname `polaris`
+- Home LAN via Ethernet, mDNS works (`polaris.local`)
+- SSH key auth only, password auth disabled in `/etc/ssh/sshd_config`
+- VS Code Remote-SSH connected
+- Git installed, repo cloned to `~/projects/vpn-pi/`
+- `harden-base.sh` written on `feat/polaris-hardening`, NOT yet run
 
-## Workflow conventions
+## Repo structure
+```
+~/projects/vpn-pi/
+├── docs/
+├── prototype/
+├── pi-deployment/     ← deployment scripts
+└── archive/
+```
 
-- **Commits**: per logical chunk, push immediately. Format: `<area>: <verb> <thing>`.
-  Example: `prototype: add wg0.conf with first peer`.
-- **Scripts**: `#!/bin/bash` shebang, `set -euo pipefail` second line, idempotent
-  teardown patterns (`2>/dev/null || true`).
-- **Configs**: written by hand, validated before applying (`sshd -t`,
-  `nft -c -f file`, `wg-quick strip wg0`).
-- **Secrets**: never commit private keys. Add patterns to `.gitignore` for
-  `*.private`, `*_key`, etc. WireGuard configs with private keys live outside
-  the repo or are sanitized examples committed as `*.example`.
-- **Verification**: every config or rule change tested before the next change.
-  Especially for sshd and nftables — verify the change works in a second SSH
-  session before disconnecting the first.
+## Git conventions
+- Branch prefixes: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, `test/`
+- Commit messages use the same prefixes
+- Push from both Mac and Pi (single-user, private repo, Pi has write access via deploy key)
 
-## What's deferred
+## SSH key topology
+- **Mac → Pi:** `~/.ssh/id_ed25519_master` with passphrase + macOS Keychain. SSH config alias `polaris`, `IdentitiesOnly yes`.
+- **Pi → GitHub:** `~/.ssh/id_ed25519_github` on Pi, no passphrase (deploy key, write enabled). SSH config block for `github.com`.
 
-- Pi-specific work (`pi-deployment/`) — hardware in shipping
-- Web UI (`webui/`) — Phase 6, hours 120+
-- Multi-user, billing, account management — out of scope
-- DNS hosting, ad-blocking via Pi-hole — Phase 5 stretch goal
+---
 
-## Decision-making defaults
+## Deployment script conventions (pi-deployment/)
 
-- The user has a 250-hour budget and a professor expecting demonstrable
-  deliverables. Default toward shipping artifacts over pedagogical sandboxes.
-- For Anthropic product specifics (Claude Code install commands, model
-  versions, API details), check official docs — training data may be stale.
-- For Linux/networking specifics, prefer the man pages and current Ubuntu
-  documentation over assumed knowledge.
+### Required boilerplate
+
+Every script in `pi-deployment/` starts with strict mode and self-logging:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Logging setup ---
+LOG_DIR="/var/log/vpn-pi"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/$(basename "$0" .sh)-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "[$(date +%H:%M:%S)] Logging to: $LOG_FILE"
+```
+
+This captures stdout, stderr, AND `bash -x` trace output into a persistent log that survives reboots. Logs go to `/var/log/vpn-pi/` because:
+- Standard Linux location for system/service logs
+- Survives if the repo is wiped or recloned
+- Persists across reboots (unlike `/tmp/`)
+- Already accessible since these scripts run with sudo
+
+Filename pattern: `<script-name>-YYYYMMDD-HHMMSS.log` so multiple runs accumulate rather than overwrite. Manual pruning for now; add logrotate config later if logs grow.
+
+### Other conventions
+
+- Functions with descriptive names — one section of work per function
+- Idempotent everywhere — check current state before changing it
+- Echo a status header per section so the operator sees live progress
+- Verify-then-modify pattern for configs (don't blindly overwrite working state)
+
+---
+
+## Running deployment scripts
+
+### Standard invocation
+
+```bash
+cd ~/projects/vpn-pi
+sudo bash -x pi-deployment/<script-name>.sh
+```
+
+`bash -x` traces each command as it runs. Don't add `| tee` on the command line — the script handles its own logging via `exec`. The `-x` trace goes to stderr, which the script redirects into the same log file, so the trace IS captured.
+
+### Pre-flight checklist for hardening / firewall / SSH scripts
+
+These can lock you out of the Pi. Before running:
+
+1. **Open a second SSH session** in another terminal. Keep it idle as a safety net.
+2. **Run the script** with the standard invocation above.
+3. **After completion, open a third terminal and test fresh SSH:**
+   ```bash
+   ssh polaris
+   ```
+   If fresh SSH works, you're good — close the safety net and proceed.
+   If it doesn't, troubleshoot from the safety-net session you kept open.
+4. **Review the log** at the path printed by the script if anything looked off.
+
+### Recovery if locked out
+- Safety-net SSH session (if still alive)
+- Edit SD card from the Mac via the USB-C reader
+- Last resort: re-flash with `ssh-copy-id` recovery procedure
+
+---
+
+## Current task
+
+`harden-base.sh` on `feat/polaris-hardening` — written, reviewed, **NOT yet run**.
+
+Before running: **retrofit the logging block above into the script** if Claude Code didn't include it.
+
+Script does:
+1. Verify running as root
+2. `apt update` + `apt upgrade -y`
+3. Install `nftables`, `fail2ban`, `unattended-upgrades`, `wireguard`
+4. Verify SSH lockdown: `PasswordAuthentication no`, `PermitRootLogin no`, `PubkeyAuthentication yes`
+5. nftables baseline: default-deny inbound, allow loopback, allow established/related, allow SSH (port 22), allow ICMP echo. WG port NOT opened yet.
+6. fail2ban sshd jail, maxretry 5, bantime 1h
+7. unattended-upgrades for security patches only
+8. Print summary of active services and firewall rules
+
+Don't:
+- Configure WG tunnels (pivot pending)
+- Open WG port in firewall yet
+- Modify SSH port
+- Touch `/etc/hostname`
+
+Commit message after first successful run:
+`feat: initial harden-base.sh with SSH, nftables, fail2ban, unattended-upgrades`
+
+---
+
+## Key gotchas already learned
+
+- **Pi Imager can silently fail to write `~/.ssh/authorized_keys`** — recover by re-flashing with password auth enabled as fallback, then `ssh-copy-id` from the Mac.
+- **"Service active" ≠ "service defending"** — always trigger defenses to verify they actually work (fail2ban especially).
+- **`IdentitiesOnly yes`** is required in Mac SSH config when the agent holds multiple keys, otherwise SSH hits `MaxAuthTries` before reaching the right one.
+- **`/tmp/` clears on reboot** — never put logs there if you might want them after a kernel update reboot.
+
+---
+
+## William's preferences
+
+- Wants pushback, not validation
+- Wants honest hour estimates, no padding
+- Wants engineering judgment, not corporate hedging
+- Does NOT want unsolicited sleep/rest advice. If directly asked, advise honestly; otherwise stay out.
+- Does NOT want copy-paste answers in deliverables — wants help structuring his own voice
+- Casual tone fine; cursing sparingly OK
+- Direct corrections welcome
+
+---
+
+## Open items
+
+- Architecture pivot verifications (CGNAT, office UDP, endpoint definitions)
+- Topology flowchart rebuild (site boundaries, named nodes, no traffic arrows)
+- Dev workflow flowchart (not started)
+- Threat model revision (depends on pivot outcome)
+- IDS data flow diagram (Phase 8 prep)
+- All current flowcharts need site-label swap if pivot confirmed
+- Mermaid migration of flowcharts (eventually)
