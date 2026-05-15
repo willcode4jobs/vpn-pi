@@ -25,31 +25,34 @@ Pending verifications:
 If confirmed: threat model shifts (home now public-facing), DDNS required for residential dynamic IP, all flowcharts need site-label swap, exit IP becomes home IP.
 
 ## Naming (stars)
-- **polaris** — master ✓ set up, hardening pending first run
+- **polaris** — master ✓ set up, ✓ hardened (harden-base.sh applied)
 - **vega** — edge (access/exit) — not yet built
 - **sirius, altair, arcturus** — endpoints — not yet built
 
 ## Polaris current state
 - Pi OS 64-bit on Pi 5 8GB
 - User `billy`, hostname `polaris`
-- Home LAN via Ethernet, mDNS works (`polaris.local`)
-- SSH key auth only, password auth disabled in `/etc/ssh/sshd_config`
+- Home LAN via Ethernet at `192.168.1.72` (DHCP reservation on the home router, eth0 MAC pinned). mDNS deliberately not used — `polaris.local` resolution is broken by the hardening firewall (see gotchas). Mac's `~/.ssh/config` points `polaris` at the IP directly.
+- SSH key auth only, password auth disabled via `/etc/ssh/sshd_config.d/00-vpn-pi-hardening.conf` drop-in (installed by harden-base.sh — pre-run state on the Pi was actually `PasswordAuthentication=yes` despite Imager intent)
 - VS Code Remote-SSH connected
 - Git installed, repo cloned to `~/projects/vpn-pi/`
-- `harden-base.sh` written on `feat/polaris-hardening`, NOT yet run
+- `harden-base.sh` applied: nftables default-deny baseline (SSH + ICMP only), fail2ban sshd jail, unattended-upgrades for security patches, WireGuard package installed (no tunnels yet)
 
 ## Repo structure
 ```
 ~/projects/vpn-pi/
 ├── docs/
-├── prototype/
-├── pi-deployment/     ← deployment scripts
+├── pi-deployment/                  ← deployment scripts (current work)
 └── archive/
+    └── phase2-vpn-exit-node/       ← legacy single-VPN-exit-node prototype, superseded by mesh design
 ```
 
 ## Git conventions
-- Branch prefixes: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, `test/`
-- Commit messages use the same prefixes
+- **Branch prefixes**: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, `test/`
+- **Commit prefixes**: mostly match branch prefixes, with two exceptions — `refactor/` branch → `refax:` commit, `docs/` branch → `dox:` commit
+- Commit messages: lowercase, minimal punctuation, descriptive (don't have to be perfect)
+- Prefix is mandatory at start of every commit message
+- **Never push to `main`** — only merge into main via PR
 - Push from both Mac and Pi (single-user, private repo, Pi has write access via deploy key)
 
 ## SSH key topology
@@ -127,28 +130,27 @@ These can lock you out of the Pi. Before running:
 
 ## Current task
 
-`harden-base.sh` on `feat/polaris-hardening` — written, reviewed, **NOT yet run**.
+`harden-base.sh` on `feat/polaris-hardening` — **applied to polaris**.
 
-Before running: **retrofit the logging block above into the script** if Claude Code didn't include it.
-
-Script does:
+What the script does (idempotent, safe to re-run on polaris and to apply to vega/sirius/altair/arcturus when they come online):
 1. Verify running as root
 2. `apt update` + `apt upgrade -y`
 3. Install `nftables`, `fail2ban`, `unattended-upgrades`, `wireguard`
-4. Verify SSH lockdown: `PasswordAuthentication no`, `PermitRootLogin no`, `PubkeyAuthentication yes`
+4. SSH lockdown via `sshd_config.d` drop-in: `PasswordAuthentication no`, `PermitRootLogin no`, `PubkeyAuthentication yes`
 5. nftables baseline: default-deny inbound, allow loopback, allow established/related, allow SSH (port 22), allow ICMP echo. WG port NOT opened yet.
-6. fail2ban sshd jail, maxretry 5, bantime 1h
+6. fail2ban sshd jail, maxretry 5, bantime 1h (waits for control socket to bind before verifying jail)
 7. unattended-upgrades for security patches only
 8. Print summary of active services and firewall rules
 
-Don't:
-- Configure WG tunnels (pivot pending)
-- Open WG port in firewall yet
+Still NOT done by this script (deferred):
+- Configure WG tunnels (architecture pivot pending)
+- Open WG port in firewall (per-node, later)
 - Modify SSH port
 - Touch `/etc/hostname`
 
-Commit message after first successful run:
-`feat: initial harden-base.sh with SSH, nftables, fail2ban, unattended-upgrades`
+First-run notes (polaris, 2026-05-14):
+- Pre-run sshd state was `PasswordAuthentication=yes` and `PermitRootLogin=without-password` — Imager didn't fully lock them down. Drop-in fixes both.
+- Initial run hit a fail2ban race (control socket not bound when verification fired). Fixed in-script with a `fail2ban-client ping` poll loop. Re-run for clean idempotent end-to-end pass + summary output.
 
 ---
 
@@ -158,6 +160,7 @@ Commit message after first successful run:
 - **"Service active" ≠ "service defending"** — always trigger defenses to verify they actually work (fail2ban especially).
 - **`IdentitiesOnly yes`** is required in Mac SSH config when the agent holds multiple keys, otherwise SSH hits `MaxAuthTries` before reaching the right one.
 - **`/tmp/` clears on reboot** — never put logs there if you might want them after a kernel update reboot.
+- **mDNS (`*.local`) breaks under the hardening firewall.** The nftables baseline drops inbound UDP/5353, so the Pi never answers mDNS queries even though `avahi-daemon` is still running and listening. Symptom: `ssh polaris.local` hangs with no client output and no entry in the Pi's `journalctl -u ssh`. Fix: connect by IP and pin the Pi to a known address via DHCP reservation on the router (not static-on-Pi). Don't poke a hole for 5353 unless mDNS is actually needed — IP + reservation is the more secure default.
 
 ---
 
