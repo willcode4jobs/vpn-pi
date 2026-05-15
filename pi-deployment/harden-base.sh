@@ -1,6 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
+# --- Logging setup ---
+LOG_DIR="/var/log/vpn-pi"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/$(basename "$0" .sh)-$(date +%Y%m%d-%H%M%S).log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "[$(date +%H:%M:%S)] Logging to: $LOG_FILE"
+
 # =============================================================================
 # pi-deployment/harden-base.sh — baseline hardening for VPN mesh nodes
 # =============================================================================
@@ -198,6 +205,15 @@ EOF
 	if [[ ${changed} -eq 1 ]]; then
 		systemctl restart fail2ban
 	fi
+	# systemctl returns once the process is launched, but fail2ban-server
+	# binds its control socket a moment later — poll until it responds.
+	local i
+	for i in {1..20}; do
+		if fail2ban-client ping >/dev/null 2>&1; then
+			break
+		fi
+		sleep 0.5
+	done
 	# Confirm the jail actually came up (catches typos in jail.local
 	# that fail2ban would otherwise silently ignore).
 	fail2ban-client status sshd >/dev/null
