@@ -26,7 +26,7 @@ If confirmed: threat model shifts (home now public-facing), DDNS required for re
 
 ## Naming (stars)
 - **polaris** — master ✓ set up, ✓ hardened (harden-base.sh applied)
-- **vega** — edge (access/exit) — not yet built
+- **vega** — edge (access/exit) — ✓ set up, ✓ hardened (harden-base.sh applied; WireGuard installed, no tunnels yet, nftables default-deny)
 - **sirius, altair, arcturus** — endpoints — not yet built
 
 ## Polaris current state
@@ -37,6 +37,12 @@ If confirmed: threat model shifts (home now public-facing), DDNS required for re
 - VS Code Remote-SSH connected
 - Git installed, repo cloned to `~/projects/vpn-pi/`
 - `harden-base.sh` applied: nftables default-deny baseline (SSH + ICMP only), fail2ban sshd jail, unattended-upgrades for security patches, WireGuard package installed (no tunnels yet)
+
+## Vega current state
+- `harden-base.sh` applied: nftables default-deny baseline, fail2ban sshd jail, unattended-upgrades, WireGuard package installed (no tunnels yet)
+- Home LAN at `192.168.1.73`, static via DHCP reservation on the home router (same mechanism as polaris — not static-on-Pi). mDNS gotcha applies equally; reach by IP.
+- WG port NOT opened in firewall yet (per-node, deferred until tunnels configured)
+- TBD / not yet captured: hardware, hostname/user, SSH config alias on the Mac, VS Code Remote-SSH, repo clone. Fill these in as confirmed.
 
 ## Repo structure
 ```
@@ -130,7 +136,7 @@ These can lock you out of the Pi. Before running:
 
 ## Current task
 
-`harden-base.sh` on `feat/polaris-hardening` — **applied to polaris**.
+`harden-base.sh` on `feat/polaris-hardening` — **applied to polaris and vega**. Remaining: sirius, altair, arcturus.
 
 What the script does (idempotent, safe to re-run on polaris and to apply to vega/sirius/altair/arcturus when they come online):
 1. Verify running as root
