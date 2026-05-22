@@ -1,23 +1,24 @@
 ```mermaid
 gantt
-    title v4 Network Architecture Project Schedule (Proportional Hours)
+    title v4 Network Architecture Project Schedule (May 8 - Aug 12)
     dateFormat  YYYY-MM-DD
-    axisFormat  %m-%d
+    axisFormat  %b-%d
+    todayMarker off
     
     section Foundation
-    A. Vega exit + cleanup & routing    :a, 2026-05-22, 9d
-    B. Arch v4 + flowchart rebuild      :b, 2026-05-22, 8d
+    A. Vega exit + routing      :a, 2026-05-08, 5d
+    B. Arch v4 + flowcharts     :b, 2026-05-08, 4d
     
     section Core Prototype
-    C. Per-client routing prototype     :c, after a, 38d
+    C. Routing prototype        :c, after a, 21d
     
     section Expansion Buildout
-    D. Endpoint fleet                   :d, after c, 26d
-    E. GUI (peer-facing self-serve)     :e, after c, 42d
-    F. IDS                              :f, after c, 30d
+    D. Endpoint fleet           :d, after c, 14d
+    E. GUI (Self-Serve)         :e, after c, 23d
+    F. IDS Build                :f, after c, 16d
     
     section Wrap-Up
-    G. Production hardening             :g, after e, 12d
-    H. Buffer                           :h, after g, 15d
-    I. Final package + demo             :i, after h, 8d
+    G. Hardening                :g, after e, 7d
+    H. Buffer                   :h, after g, 8d
+    I. Final package + demo     :i, after h, 4d
 ```
