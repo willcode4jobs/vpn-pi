@@ -1,6 +1,6 @@
 ```mermaid
 graph TD
-    Start([Start]) --> A[Phase A: Vega exit + DDNS <br> 9 hrs]
+    Start([Start]) --> A[Phase A: Vega exit + routing + troubleshooting <br> 9 hrs]
     Start --> B[Phase B: Arch v4 + flowcharts <br> 8 hrs]
     
     A --> C[Phase C: Per-client routing prototype <br> 38 hrs]
@@ -18,6 +18,6 @@ graph TD
     H --> I[Phase I: Final package + demo <br> 8 hrs]
     I --> Finish([Finish])
     
-    classDef critical fill:#f9d0c4,stroke:#333,stroke-width:2px;
+    classDef critical fill:#f9d0c4,stroke:#333,stroke-width:2px,color:#000;
     class A,C,E,G,H,I critical;
 ```
