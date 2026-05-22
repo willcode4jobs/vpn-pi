@@ -1,3 +1,4 @@
+```mermaid
 gantt
     title v4 Network Architecture Project Schedule (Proportional Hours)
     dateFormat  YYYY-MM-DD
@@ -19,3 +20,4 @@ gantt
     G. Production hardening          :g, after d e f, 12d
     H. Buffer                        :h, after g, 15d
     I. Final package + demo          :i, after h, 8d
+```

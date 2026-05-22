@@ -1,3 +1,4 @@
+```mermaid
 graph TD
     Start([Start]) --> A[Phase A: Vega exit + DDNS <br> 9 hrs]
     Start --> B[Phase B: Arch v4 + flowcharts <br> 8 hrs]
@@ -19,3 +20,4 @@ graph TD
     
     classDef critical fill:#f9d0c4,stroke:#333,stroke-width:2px;
     class A,C,E,G,H,I critical;
+```
