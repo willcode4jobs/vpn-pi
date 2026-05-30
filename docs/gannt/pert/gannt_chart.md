@@ -1,44 +1,39 @@
 ```mermaid
 gantt
-    title v5 Island Internet Architecture (Re-Baseline)
+    title v5 Island Internet Architecture (Status Tracker)
     dateFormat  YYYY-MM-DD
     axisFormat  %b-%d
+    todayMarker off
     
+    %% GitHub-friendly custom classes for status
+    classDef ahead fill:#2ea043,stroke:#238636,stroke-width:2px,color:#fff;
+    classDef behind fill:#f85149,stroke:#b62324,stroke-width:2px,color:#fff;
+    classDef ontrack fill:#d29922,stroke:#9e6a03,stroke-width:2px,color:#fff;
+    classDef pending fill:#30363d,stroke:#8b949e,stroke-width:1px,color:#fff;
+
+    section 📊 LEGEND
+    Ahead / Done (Green)       : ahead, leg1, 2026-05-30, 1d
+    On Track / Active (Yellow) : ontrack, leg2, 2026-05-30, 1d
+    Behind / Re-work (Red)     : behind, leg3, 2026-05-30, 1d
+    Pending (Dark)             : pending, leg4, 2026-05-30, 1d
+
     section Foundation & Core
-    A. Vega ingress (DONE)           :done, a, 2026-05-08, 2026-05-15
-    B. Arch v5 + Gantt (Active)      :active, b, 2026-05-30, 4d
-    C. Mesh relay / CLI core         :c, after b, 10d
+    A. Vega ingress (DONE)           : ahead, a, 2026-05-08, 7d
+    B. Arch v5 (RE-OPENED)           : behind, b, 2026-05-30, 4d
+    C. Mesh relay (CLI DONE)         : ahead, c, after b, 10d
     
     section Node Fleet
-    D. Node fleet completion         :d, after c, 7d
+    D. Node fleet (NODE 1 UP)        : ontrack, d, after c, 7d
     
     section Automation Cluster
-    App (any-node host)              :app, after d, 14d
-    FTP file sharing                 :ftp, after d, 7d
-    Deployment auto (D3)             :dep, after d, 10d
-    Self-heal daemon (Go)            :dae, after c, 18d
+    App (any-node host)              : pending, app, after d, 14d
+    FTP file sharing                 : pending, ftp, after d, 7d
+    Deployment auto (D3)             : pending, dep, after d, 10d
+    Self-heal daemon (Go)            : pending, dae, after c, 18d
     
     section Security & Wrap-Up
-    F. IDS (Telemetry)               :f, after app ftp dep, 10d
-    G. Prod hardening                :g, after f dae, 7d
-    H. Buffer                        :h, after g, 7d
-    I. Final package + demo          :i, after h, 4d
+    F. IDS (Telemetry)               : pending, f, after app ftp dep, 10d
+    G. Prod hardening                : pending, g, after f dae, 7d
+    H. Buffer                        : pending, h, after g, 7d
+    I. Final package + demo          : pending, i, after h, 4d
 ```
-
-### Legend
-
-| Phase | Description                              | Hrs |
-|-------|------------------------------------------|-----|
-| A     | Finish vega exit + cleanup               | 9   |
-| B     | Architecture v4 + flowchart rebuild      | 8   |
-| C     | Per-client routing prototype             | 38  |
-| D     | Endpoint fleet                           | 26  |
-| E     | GUI (peer-facing self-serve)             | 42  |
-| F     | IDS (network + tunnel detection)         | 30  |
-| G     | Production hardening                     | 12  |
-| H     | Buffer                                   | 15  |
-| I     | Final package + demo                     | 8   |
-|       | **Total**                                | **188** |
-
-**Critical path:** A → C → E → G → H → I = 96 days (May 8 → Aug 12).
-Durations sized at ~0.77 days/hr on the critical path; parallel tracks (B, D, F) fit inside the windows of A and E.
