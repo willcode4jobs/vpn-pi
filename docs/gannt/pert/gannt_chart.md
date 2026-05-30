@@ -1,26 +1,28 @@
 ```mermaid
 gantt
-    title v4 Network Architecture Project Schedule (May 8 - Aug 12)
+    title v5 Island Internet Architecture (Re-Baseline)
     dateFormat  YYYY-MM-DD
     axisFormat  %b-%d
-    todayMarker off
-
-    section Foundation
-    A    :a, 2026-05-08, 7d
-    B    :b, 2026-05-08, 6d
-
-    section Core Prototype
-    C    :c, after a, 29d
-
-    section Expansion Buildout
-    D    :d, after c, 20d
-    E    :e, after c, 32d
-    F    :f, after c, 23d
-
-    section Wrap-Up
-    G    :g, after e, 9d
-    H    :h, after g, 13d
-    I    :i, after h, 6d
+    
+    section Foundation & Core
+    A. Vega ingress (DONE)           :done, a, 2026-05-08, 2026-05-15
+    B. Arch v5 + Gantt (Active)      :active, b, 2026-05-30, 4d
+    C. Mesh relay / CLI core         :c, after b, 10d
+    
+    section Node Fleet
+    D. Node fleet completion         :d, after c, 7d
+    
+    section Automation Cluster
+    App (any-node host)              :app, after d, 14d
+    FTP file sharing                 :ftp, after d, 7d
+    Deployment auto (D3)             :dep, after d, 10d
+    Self-heal daemon (Go)            :dae, after c, 18d
+    
+    section Security & Wrap-Up
+    F. IDS (Telemetry)               :f, after app ftp dep, 10d
+    G. Prod hardening                :g, after f dae, 7d
+    H. Buffer                        :h, after g, 7d
+    I. Final package + demo          :i, after h, 4d
 ```
 
 ### Legend
