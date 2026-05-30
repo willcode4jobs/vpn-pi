@@ -1,4 +1,4 @@
-mermaid ```
+```mermaid
 gantt
     title v5 Island Internet — Status Tracker
     dateFormat YYYY-MM-DD
