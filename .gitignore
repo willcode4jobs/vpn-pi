@@ -12,5 +12,14 @@ prototype/configs/**/current.*
 *~
 .*.swp
 .DS_Store
+._*
 node_modules/
 *.log
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Go build / test artifacts (built binaries live under */dist/, ignored locally)
+*.test
+coverage.out
