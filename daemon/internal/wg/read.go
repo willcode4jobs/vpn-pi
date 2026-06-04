@@ -17,8 +17,9 @@ import (
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
-// Reader reads peer state from a single WireGuard interface. It is read-only:
-// it never sets configuration, so it carries zero lockout risk.
+// Reader is the handle to a single WireGuard interface. Reads (peer state) are
+// its main job and carry zero lockout risk; the one write it performs is a
+// per-peer endpoint re-assert (see act.go), which never adds or removes peers.
 type Reader struct {
 	client *wgctrl.Client
 	iface  string
