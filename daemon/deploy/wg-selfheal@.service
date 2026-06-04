@@ -1,0 +1,61 @@
+# wg-selfheal@.service — per-node WireGuard self-heal watchdog (vpn-pi)
+#
+# Templated on ROLE: enable as wg-selfheal@relay (vega) or wg-selfheal@spoke
+# (sirius). One unit file, deployed identically everywhere; %i selects the role
+# so the binary, the unit, and the role choice are the only per-node variables.
+#
+# Privilege model: NO root, NO sudo. A DynamicUser (ephemeral, sandboxed)
+# carries exactly CAP_NET_ADMIN — the minimum to read (and later set) WireGuard
+# over netlink. Everything else is locked down.
+
+[Unit]
+Description=WireGuard self-heal watchdog (%i)
+Documentation=https://github.com/willcode4jobs/vpn-pi
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wg-selfheal --role=%i --iface=wg0
+
+# --- Privilege: ephemeral user, single capability ---
+DynamicUser=yes
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+
+# --- Filesystem: read-only world, no home, private tmp ---
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# --- Kernel / namespace lockdown ---
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+# --- Syscall / address-family allow-list ---
+# AF_NETLINK: talk to the WireGuard subsystem. AF_INET/INET6: re-resolve DNS
+# endpoints (act path). AF_UNIX: journald logging.
+RestrictAddressFamilies=AF_NETLINK AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+# --- Lifecycle ---
+# The daemon tolerates a missing/down wg0 (it warns and keeps polling), so a
+# transient tunnel outage never trips this. Restart only covers a real crash.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
