@@ -9,6 +9,7 @@ but timestamps advance off boot so the feed looks live under polling.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 
 from app.models import (
@@ -18,22 +19,29 @@ from app.models import (
     NodeIdentity,
 )
 
-_SELF = NodeIdentity(name="polaris", role="relay", wg_interface="wg0")
-
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
 class MockDataSource:
-    """Satisfies the DataSource protocol with synthetic, time-advancing data."""
+    """Satisfies the DataSource protocol with synthetic, time-advancing data.
+
+    Node identity is real per-node config (set GUI_NODE_NAME on each node) so
+    uploads from sirius are attributed to sirius; the IDS feed is still synthetic.
+    """
 
     def __init__(self) -> None:
+        self._self = NodeIdentity(
+            name=os.environ.get("GUI_NODE_NAME", "polaris"),
+            role=os.environ.get("GUI_NODE_ROLE", "relay"),
+            wg_interface=os.environ.get("GUI_WG_IFACE", "wg0"),
+        )
         # Anchor timestamps to construction so ages grow as the app runs.
         self._epoch = _now()
 
     def node(self) -> NodeIdentity:
-        return _SELF
+        return self._self
 
     def ids(self, limit: int = 100) -> list[IdsEvent]:
         # Fixed seed host-security events, timestamped relative to boot, newest

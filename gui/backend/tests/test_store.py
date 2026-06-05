@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 from app.db import SqliteFileStore
+from app.remote import RemoteFileStore
 from app.store import FileNotFound, PlaceholderFileStore, build_store
 
 
@@ -61,6 +62,16 @@ class TestBuildStore(unittest.TestCase):
                 store = build_store()
             self.assertIsInstance(store, SqliteFileStore)
             self.assertIn("polaris", store.list().root)  # real-store label
+
+    def test_remote_when_selected(self) -> None:
+        env = {"GUI_FILES": "remote", "GUI_FILES_URL": "http://polaris-wg0:8787"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertIsInstance(build_store(), RemoteFileStore)
+
+    def test_remote_requires_url(self) -> None:
+        with mock.patch.dict(os.environ, {"GUI_FILES": "remote"}, clear=True):
+            with self.assertRaises(RuntimeError):
+                build_store()
 
 
 if __name__ == "__main__":

@@ -17,12 +17,14 @@ One screen, the two built panels
 
 Files — the island file share. The headline island service: proof the island provides
 its own internet-like services, not just a VPN tunnel. Upload/download/delete behind a
-FileStore interface (app/store.py) with two impls: an in-memory PLACEHOLDER (active on
-the builder PC) and the real SQLite store HOSTED ON POLARIS (GUI_FILES=sqlite). Build +
-demo on the placeholder here, push, pull on polaris, flip to sqlite — env only, no code
-change. NOTE: the SQLite store makes polaris a central server, a deliberate departure
-from the "no central host" line above, taken for scope; other nodes' GUIs reach polaris
-over wg0. Auth is still a gap — the upload endpoint must be gated before binding wg0.
+FileStore interface (app/store.py), three impls by GUI_FILES env: placeholder (in-memory,
+builder PC), sqlite (real, ON POLARIS — the file authority), remote (every other node,
+forwards file ops to polaris over wg0). Deployment is Option B: each node runs its OWN
+backend (own UI + own identity + own local IDS); only files are central, so a file
+uploaded on sirius shows on altair. The frontend is identical everywhere (same-origin
+/api) and ships as a static bundle via gui/deploy/push-gui.sh. NOTE: central files make
+polaris a server — a deliberate departure from "no central host," taken for scope. Auth
+is still a gap — upload/delete must be gated before binding wg0.
 IDS feed — host/physical security events only (auditd/udev/fail2ban: USB insertion,
 console login, auth bans, unexpected reboot). Same screen as Files, by design.
 Admin view (URL path, later) — RLPF port-request flow: request a port + reason → Gemini

@@ -1,6 +1,6 @@
 """The file-store seam: an interface + the builder-side placeholder.
 
-The island file share has two implementations behind one interface:
+The island file share has three implementations behind one interface:
 
   - PlaceholderFileStore  (here)        in-memory, the ACTIVE default. Runs on
                                          the builder PC, where the real DB — which
@@ -8,13 +8,17 @@ The island file share has two implementations behind one interface:
                                          upload/list/download/delete so the GUI
                                          works end to end, but nothing persists
                                          across a restart.
-  - SqliteFileStore       (db.py)        the real, durable store. Selected on
-                                         polaris with GUI_FILES=sqlite after you
-                                         push from the builder and pull on the node.
+  - SqliteFileStore       (db.py)        the real, durable store. Runs ON POLARIS
+                                         (the file authority): GUI_FILES=sqlite.
+  - RemoteFileStore       (remote.py)    a NODE's view of the central store. Runs
+                                         on every other node: GUI_FILES=remote
+                                         GUI_FILES_URL=http://<polaris-wg0>:8787.
+                                         Forwards every file op to polaris's API.
 
-Workflow: build + demo here on the placeholder, push to git, pull on polaris,
-run with GUI_FILES=sqlite GUI_DB_PATH=/var/lib/vpn-pi/island.db. Same interface,
-same frontend, the storage just lights up for real on the node.
+Option B topology: each node runs its own backend (its UI + local node/IDS), and
+files are central — polaris=sqlite, all other nodes=remote→polaris. A file
+uploaded from sirius is visible on altair because both read polaris's store. The
+frontend never changes; only this binding (and the backend's host) does.
 """
 
 from __future__ import annotations
@@ -145,19 +149,31 @@ class PlaceholderFileStore:
 
 def build_store() -> FileStore:
     """Pick the implementation from env. Defaults to the placeholder so the app
-    runs anywhere with nothing to set up; polaris flips it to the real SQLite.
+    runs anywhere with nothing to set up; polaris flips it to SQLite; every other
+    node points at polaris.
 
-        GUI_FILES=placeholder                              (default) in-memory
-        GUI_FILES=sqlite  GUI_DB_PATH=/var/lib/vpn-pi/island.db   real, on polaris
+        GUI_FILES=placeholder                                   (default) in-memory
+        GUI_FILES=sqlite  GUI_DB_PATH=/var/lib/vpn-pi/island.db  real, on polaris
+        GUI_FILES=remote  GUI_FILES_URL=http://<polaris>:8787    a node -> polaris
     """
     port = os.environ.get("GUI_PORT", "8787")
     bind = f"wg0:{port}"
     kind = os.environ.get("GUI_FILES", "placeholder").lower()
     if kind == "sqlite":
-        # Local import keeps the sqlite module off the default (placeholder) path.
+        # Local imports keep the non-default backends off the placeholder path.
         from app.db import SqliteFileStore
 
         default_db = Path(__file__).resolve().parent.parent / "island.db"
         path = os.environ.get("GUI_DB_PATH", str(default_db))
         return SqliteFileStore(path, root_label=f"polaris:{Path(path).name}", bind=bind)
+    if kind == "remote":
+        from app.remote import RemoteFileStore
+
+        url = os.environ.get("GUI_FILES_URL")
+        if not url:
+            raise RuntimeError(
+                "GUI_FILES=remote requires GUI_FILES_URL "
+                "(e.g. http://<polaris-wg0>:8787)"
+            )
+        return RemoteFileStore(url)
     return PlaceholderFileStore(bind=bind)

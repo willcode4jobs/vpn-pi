@@ -6,7 +6,9 @@ are no longer here (they're the SQLite store — see test_file_store.py).
 
 from __future__ import annotations
 
+import os
 import unittest
+from unittest import mock
 
 from app.models import IdsSource
 from app.sources import MockDataSource
@@ -16,10 +18,15 @@ class TestMockSource(unittest.TestCase):
     def setUp(self) -> None:
         self.src = MockDataSource()
 
-    def test_node_identity(self) -> None:
+    def test_node_identity_defaults_to_polaris(self) -> None:
         node = self.src.node()
         self.assertEqual(node.name, "polaris")
         self.assertEqual(node.wg_interface, "wg0")
+
+    def test_node_identity_is_per_node_via_env(self) -> None:
+        with mock.patch.dict(os.environ, {"GUI_NODE_NAME": "sirius"}, clear=False):
+            node = MockDataSource().node()
+        self.assertEqual(node.name, "sirius")  # uploads will be attributed to sirius
 
     def test_ids_newest_first_and_limited(self) -> None:
         events = self.src.ids(limit=3)

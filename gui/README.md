@@ -45,17 +45,48 @@ gui/
 - **Node + IDS — mock.** Still synthetic behind `sources/base.py:DataSource`; the
   real per-node sensors (auditd/udev/fail2ban) drop in with no upstream change.
 
-## Build → push → run on polaris
+## Deployment topology (Option B)
 
-The builder runs the placeholder; after you push and pull onto polaris, flip the
-file store to the real SQLite. No code change — env only:
+Every node runs its **own backend** — serving its UI, its identity, and its local
+IDS feed. Only **files** are central: polaris holds the SQLite store, every other
+node forwards file ops to it over wg0. A file uploaded from sirius is visible on
+altair because both read polaris's store. The frontend is identical everywhere
+(same-origin `/api`); only the backend's `GUI_FILES` binding differs.
 
+```
+        ┌─────────── polaris (file authority) ───────────┐
+        │  backend  GUI_FILES=sqlite                       │
+        │  SQLite  /var/lib/vpn-pi/island.db               │
+        └───────▲───────────────▲───────────────▲─────────┘
+                │ wg0           │ wg0           │ wg0   (file ops only)
+        ┌───────┴──┐     ┌──────┴───┐     ┌─────┴────┐
+        │  sirius  │     │  altair  │     │   vega   │   each: own backend +
+        │ remote→  │     │ remote→  │     │ remote→  │   own UI + own IDS,
+        │ polaris  │     │ polaris  │     │ polaris  │   GUI_FILES=remote
+        └──────────┘     └──────────┘     └──────────┘
+```
+
+### Push the frontend to the nodes
+Build on the Mac, ship the static bundle (nodes get no npm/node):
 ```bash
-# on polaris, after `git pull`:
+gui/deploy/push-gui.sh polaris vega sirius altair arcturus
+```
+
+### Run each node's backend (env only — no code change)
+```bash
+# polaris — the file authority
 GUI_FILES=sqlite GUI_DB_PATH=/var/lib/vpn-pi/island.db \
-GUI_BIND=<wg0-addr> GUI_PORT=8787 \
+GUI_NODE_NAME=polaris GUI_BIND=<wg0-addr> GUI_PORT=8787 \
+  ./.venv/bin/python -m app.main
+
+# every other node — local backend, files proxied to polaris
+GUI_FILES=remote GUI_FILES_URL=http://<polaris-wg0>:8787 \
+GUI_NODE_NAME=sirius  GUI_BIND=<wg0-addr> GUI_PORT=8787 \
   ./.venv/bin/python -m app.main
 ```
+
+`GUI_NODE_NAME` is what tags this node's uploads and labels its masthead — set it
+per node. Never bind `0.0.0.0`.
 
 ## Run it (dev)
 
