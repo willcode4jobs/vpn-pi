@@ -3,10 +3,15 @@
 Serves the mesh-health + IDS API and, in production, the built frontend. Binds
 loopback/wg0 only — never a wide bind (GUI-CONTEXT.md, non-negotiable).
 
-The DataSource is wired here and nowhere else: today MockDataSource; when the
-daemon's v1.1 status socket lands, swap the one line below for SocketDataSource
-(daemon on the critical path) or WgDataSource (daemon off-path). That single
-assignment *is* the coupling lever.
+The DataSource is wired here and nowhere else — that binding *is* the coupling
+lever. It's selected by env so flipping it needs no code change:
+
+    GUI_SOURCE=mock                          (default) synthetic data, no daemon
+    GUI_SOURCE=socket GUI_STATUS_SOCK=<path>  read the daemon's v1.1 status socket
+                                              (daemon on the critical path)
+
+A WgDataSource (daemon off-path, query wg directly) would slot in here as a third
+case — deliberately not built; it duplicates the daemon's decide core.
 """
 
 from __future__ import annotations
@@ -19,10 +24,22 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.models import IdsEvent, MeshSnapshot
-from app.sources import DataSource, MockDataSource
+from app.sources import DataSource, MockDataSource, SocketDataSource
 
-# --- The coupling lever. Swap this one binding when real data lands. ---
-SOURCE: DataSource = MockDataSource()
+# Default status-socket path matches the systemd unit's RuntimeDirectory.
+_DEFAULT_SOCK = "/run/wg-selfheal/status.sock"
+
+
+def _build_source() -> DataSource:
+    """The coupling lever, resolved from env. Defaults to mock so the app runs
+    with no daemon present."""
+    kind = os.environ.get("GUI_SOURCE", "mock").lower()
+    if kind == "socket":
+        return SocketDataSource(os.environ.get("GUI_STATUS_SOCK", _DEFAULT_SOCK))
+    return MockDataSource()
+
+
+SOURCE: DataSource = _build_source()
 
 app = FastAPI(title="su495-mesh-gui", version="0.1.0-skeleton")
 
