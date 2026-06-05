@@ -1,4 +1,4 @@
-SU495 — GUI Context (mesh dashboard / app, Phase E)
+SU495 — GUI Context (island dashboard / app, Phase E)
 
 Lean context for GUI build sessions — the app only. FARS-clean.
 
@@ -13,22 +13,29 @@ Stack
 .tsx frontend (preferred over separate html/css/js) + Python backend (learnability).
 Bind wg0 / localhost only — never a wide/public bind.
 
-One screen, four areas
+One screen, the two built panels
 
-Mesh health — per-peer up / stale / degraded + handshake age, from the daemon's sensor
-data. A node going silent here is itself the alarm. The heart of the screen.
-IDS feed — host/physical sensor events (auditd/udev: USB insertion, console logins,
-unexpected reboots) + mesh anomalies (unexpected peer/handshake). Same screen as
-mesh-health, by design.
-Files — FTP share / write between nodes.
-Admin view (URL path) — RLPF port-request flow: request a port + reason → Gemini Flash
-triage → approve / reject / defer (tiers: 1 auto / 2 human / 3 reject).
+Files — the wg0-bound file share between nodes. The headline island service: proof the
+island provides its own internet-like services, not just a VPN tunnel. The first panel.
+IDS feed — host/physical security events only (auditd/udev/fail2ban: USB insertion,
+console login, auth bans, unexpected reboot). Same screen as Files, by design.
+Admin view (URL path, later) — RLPF port-request flow: request a port + reason → Gemini
+Flash triage → approve / reject / defer (tiers: 1 auto / 2 human / 3 reject).
 
-Data source — the one open decision ("coupling lever")
+Cut (was scope creep)
 
-App reads the daemon's status socket → daemon on the critical path.
-App queries wg directly → daemon parallel / off-path.
-Parked; decide when wiring real data. (Socket seam lands in daemon v1.1.)
+Mesh-health and the daemon status-socket coupling are CUT. That panel read the
+wg-selfheal daemon's sensor data over a unix socket, which put the GUI on the daemon's
+critical path for data that doesn't exist yet (no WG tunnels on any node). The "coupling
+lever" decision (read daemon socket vs. query wg directly) is therefore moot — the GUI
+no longer talks to the daemon at all. See git history on branch feat/gui-files-ids.
+
+Data source
+
+Mock today; everything reads through one DataSource interface. The real per-node source
+(wg0-bound FTP/share listing for Files; auditd/udev/fail2ban for IDS) slots in behind it
+with no upstream change. Neither real backend is built yet — but unlike the daemon path,
+both can be wired on a single node without any WG tunnels.
 
 Aesthetic — non-negotiable
 
@@ -39,6 +46,6 @@ Read the frontend-design skill before generating any UI.
 
 Build order + scope
 
-The GUI is the surface for the daemon + IDS stack — one screen, not three builds.
-Skeleton first: one node, mesh-health panel + IDS feed. Files + admin after.
+Files first, then host-IDS sensors, then admin/RLPF. One screen, not three builds.
 No hardcoded secrets — Gemini Flash key (RLPF triage) lives in Infisical.
+FTP server binds wg0 only; open the control + passive-data port range on wg0 in nftables.

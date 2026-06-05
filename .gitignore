@@ -14,3 +14,6 @@ prototype/configs/**/current.*
 .DS_Store
 node_modules/
 *.log
+
+# Compiled daemon binaries — built in the vpn-pi-daemon repo, not tracked here
+/daemon/

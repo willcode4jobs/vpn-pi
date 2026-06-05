@@ -1,12 +1,12 @@
 import { clock } from "../format";
-import type { MeshSnapshot } from "../types";
+import type { NodeIdentity } from "../types";
 import type { Poll } from "../api";
 
-// The masthead: who this pane reports for, and whether the data is live. The
-// link state (LIVE / SIGNAL LOST) is the first thing to go red when the backend
-// or daemon goes silent — the node going quiet is the alarm.
-export function StatusBar({ poll }: { poll: Poll<MeshSnapshot> }) {
-  const node = poll.data?.node;
+// The masthead: who this pane reports for, and whether the backend is live. The
+// link state (LIVE / SIGNAL LOST) is the first thing to go red when the node's
+// backend goes silent — the node going quiet is the alarm.
+export function StatusBar({ poll }: { poll: Poll<NodeIdentity> }) {
+  const node = poll.data;
   const live = !poll.stale && poll.data !== null;
 
   return (

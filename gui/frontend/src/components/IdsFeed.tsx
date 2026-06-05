@@ -3,8 +3,8 @@ import { clock } from "../format";
 import type { IdsEvent, IdsSeverity } from "../types";
 
 // Severity drives the left rail + label color; source is a fixed-width tag so
-// the eye can filter by column. Same screen as mesh health, by design — a mesh
-// anomaly and a USB insertion belong in one field of view.
+// the eye can filter by column. Host-security sensors only — udev (USB), auditd
+// (login), fail2ban (auth), uptime (reboot). Shares the screen with Files.
 const SEV_LABEL: Record<IdsSeverity, string> = {
   info: "INFO",
   warn: "WARN",
@@ -19,7 +19,7 @@ export function IdsFeed({ poll }: { poll: Poll<IdsEvent[]> }) {
       <div className="panel-head">
         <h2>IDS FEED</h2>
         <div className="tally">
-          <span className="dim">host · mesh sensors</span>
+          <span className="dim">host sensors</span>
         </div>
       </div>
 

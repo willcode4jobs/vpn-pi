@@ -1,8 +1,11 @@
-# SU495 mesh GUI — skeleton (Phase E)
+# SU495 island GUI — skeleton (Phase E)
 
-Per-node single pane of glass. Mesh health + IDS feed on one screen, served on
-loopback/wg0. One app, one screen — not three builds. Files + admin (RLPF
-port-request) come after this skeleton.
+Per-node single pane of glass for the island. Two panels on one screen — the
+wg0-bound **file share** and a host-security **IDS feed** — served on
+loopback/wg0. One app, one screen. Admin (RLPF port-request) comes later.
+
+No daemon. The earlier daemon status-socket coupling (mesh-health) was cut as
+scope creep — see git history. This GUI reads only files + host sensors.
 
 See `../GUI-CONTEXT.md` for scope and the non-negotiables.
 
@@ -12,26 +15,23 @@ See `../GUI-CONTEXT.md` for scope and the non-negotiables.
 gui/
 ├── backend/                 FastAPI, binds 127.0.0.1 only
 │   └── app/
-│       ├── main.py          API + the coupling lever (where the data source is wired)
-│       ├── models.py        wire models — mirror the daemon's Go structs 1:1
+│       ├── main.py          API: /api/node, /api/files, /api/ids
+│       ├── models.py        wire models (mirror frontend src/types.ts)
 │       └── sources/
-│           ├── base.py      DataSource protocol — the parked socket-vs-wg seam
-│           └── mock.py      synthetic 5-node mesh, runs with no daemon/wg/nodes
+│           ├── base.py      DataSource protocol — the one read surface
+│           └── mock.py      synthetic node/files/ids, runs with no node or wg
 └── frontend/                Vite + React + TypeScript (.tsx), built on the Mac
     └── src/
-        ├── App.tsx          one screen: StatusBar + MeshHealth + IdsFeed
+        ├── App.tsx          one screen: StatusBar + Files + IdsFeed
         ├── api.ts           2s polling hooks; stale-flag = silent-node alarm
         └── components/
 ```
 
-## The coupling lever
+## Data source
 
-GUI-CONTEXT's one open decision — daemon status socket (on critical path) vs.
-querying `wg` directly (off-path) — is **parked**. It lives as a code seam, not a
-commitment: everything depends on `sources/base.py:DataSource`. Today
-`MockDataSource` satisfies it. When the daemon's v1.1 status socket lands, add
-`SocketDataSource` (or `WgDataSource`) and change the one `SOURCE =` line in
-`app/main.py`. Nothing upstream moves.
+Mock-only today. Everything reads through `sources/base.py:DataSource`, so the
+real per-node source — a wg0-bound FTP/share listing for files, auditd/udev/
+fail2ban for IDS — drops in behind the same interface with no upstream changes.
 
 ## Run it (dev)
 
@@ -53,6 +53,12 @@ npm run dev
 
 Open the URL Vite prints (127.0.0.1:5173).
 
+## Test
+
+```bash
+cd gui/backend && ./.venv/bin/python -m unittest discover -s tests
+```
+
 ## Build for a node
 
 ```bash
@@ -65,5 +71,5 @@ The backend serves the built UI at `/`. Override the bind for wg0 with
 
 ## Status
 
-Skeleton: mesh-health panel + IDS feed, one node, mock data. **Not yet:** files
-panel, admin/RLPF view, real data source, auth, wg0 bind hardening.
+Skeleton: Files panel + host-IDS feed, one node, mock data. **Not yet:** real
+file-share backend, real host sensors, admin/RLPF view, auth, wg0 bind hardening.

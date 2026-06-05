@@ -1,7 +1,7 @@
 {
-  "name": "su495-mesh-gui",
+  "name": "su495-island-gui",
   "private": true,
-  "version": "0.1.0-skeleton",
+  "version": "0.2.0-skeleton",
   "type": "module",
   "scripts": {
     "dev": "vite",

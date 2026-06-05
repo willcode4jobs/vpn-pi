@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { IdsEvent, MeshSnapshot } from "./types";
+import type { FilesSnapshot, IdsEvent, NodeIdentity } from "./types";
 
 // Result of a polled endpoint. `stale` true once a fetch has failed since the
 // last success — the silent-node signal the screen is built around: when the
@@ -61,8 +61,11 @@ function usePoll<T>(url: string, intervalMs: number): Poll<T> {
   return state;
 }
 
-export const useMesh = (intervalMs = 2000) =>
-  usePoll<MeshSnapshot>("/api/mesh", intervalMs);
+export const useNode = (intervalMs = 2000) =>
+  usePoll<NodeIdentity>("/api/node", intervalMs);
+
+export const useFiles = (intervalMs = 2000) =>
+  usePoll<FilesSnapshot>("/api/files", intervalMs);
 
 export const useIds = (intervalMs = 2000) =>
   usePoll<IdsEvent[]>("/api/ids", intervalMs);

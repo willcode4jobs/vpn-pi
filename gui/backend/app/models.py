@@ -1,16 +1,15 @@
 """Wire models for the GUI API.
 
-These mirror the daemon's Go types 1:1 so the eventual status-socket seam is a
-straight deserialization, not a translation layer:
+The GUI is the surface for two island concerns:
 
-  heal.PeerStatus  -> PeerStatus   (mesh health)
-  heal.State       -> PeerState    (ok | stale | degraded)
-  alert.Event      -> IdsEvent     (one source feeding the IDS feed)
+  - Files — the wg0-bound file share between nodes (the headline "island
+    service": proof the island provides its own internet-like services).
+  - IDS   — host/physical security events (auditd/udev/fail2ban: USB insertion,
+    console login, auth bans, unexpected reboot).
 
-The IDS feed is broader than mesh transitions — auditd/udev host events (USB
-insertion, console login, unexpected reboot) land here too — so IdsEvent carries
-a `source` and `severity` the daemon's mesh Event doesn't. Mesh transitions are
-just one source among several.
+Each node serves its own pane over loopback/wg0; NodeIdentity says who it is
+reporting for. There is no peer/mesh-health surface here — that was a daemon
+sensor coupling and has been cut.
 """
 
 from __future__ import annotations
@@ -21,49 +20,40 @@ from enum import Enum
 from pydantic import BaseModel
 
 
-class PeerState(str, Enum):
-    """Mirrors daemon heal.State. Order is the severity ladder."""
-
-    OK = "ok"
-    STALE = "stale"
-    DEGRADED = "degraded"
-
-
-class PeerStatus(BaseModel):
-    """One peer's mesh-health row. Mirrors daemon heal.PeerStatus."""
-
-    peer: str  # WireGuard public key — stable identity
-    name: str  # human label, e.g. "sirius"
-    state: PeerState
-    last_handshake: datetime | None  # None == never handshaked
-    endpoint: str | None
-
-
 class NodeIdentity(BaseModel):
     """Who this pane of glass is reporting *for*. Each node serves its own."""
 
-    name: str
-    role: str  # "spoke" | "relay" — mirrors daemon heal.Role.String()
-    public_key: str
-    wg_interface: str
+    name: str  # star name, e.g. "polaris"
+    role: str  # "spoke" | "relay"
+    wg_interface: str  # the island interface the services bind to
 
 
-class MeshSnapshot(BaseModel):
-    """Everything the mesh-health panel needs for one render."""
+class SharedFile(BaseModel):
+    """One entry in the island file share."""
 
-    node: NodeIdentity
-    peers: list[PeerStatus]
-    generated_at: datetime
+    name: str  # path/filename within the share root
+    size: int  # bytes
+    node: str  # which node contributed it (the share is island-wide)
+    modified: datetime
+
+
+class FilesSnapshot(BaseModel):
+    """Everything the Files panel needs for one render. `root`/`bind` head the
+    panel so the operator can see the share is wg0-bound, never public."""
+
+    root: str  # share root path on disk, e.g. "/srv/island"
+    bind: str  # where the file service listens, e.g. "wg0:21"
+    files: list[SharedFile]
 
 
 class IdsSource(str, Enum):
-    """Where an IDS event came from. Only MESH exists in the daemon today;
-    the host sources are placeholders the skeleton already renders so the panel
-    is shaped right when auditd/udev sensors land."""
+    """Where a host-security event came from. All are local host sensors — no
+    mesh/daemon source. USB/LOGIN/AUTH/REBOOT are the sensors the hardened base
+    already has signal for (udev, auditd, fail2ban, uptime)."""
 
-    MESH = "mesh"  # peer/handshake transition, from the daemon
     USB = "usb"  # udev device insertion
     LOGIN = "login"  # auditd console / session login
+    AUTH = "auth"  # fail2ban ban / repeated auth failure
     REBOOT = "reboot"  # unexpected restart
 
 
@@ -74,12 +64,11 @@ class IdsSeverity(str, Enum):
 
 
 class IdsEvent(BaseModel):
-    """One line in the IDS feed. Mesh transitions map from daemon alert.Event;
-    host events come from sensors not yet built."""
+    """One line in the IDS feed. Host sensor events, already rendered."""
 
     id: str
     at: datetime
     source: IdsSource
     severity: IdsSeverity
-    subject: str  # node/peer/device the event is about
+    subject: str  # node/device/user the event is about
     message: str  # human-readable, already rendered

@@ -1,30 +1,25 @@
-// Mirrors gui/backend/app/models.py, which mirrors the daemon's Go structs.
-// Keep these three in sync — they are the same contract at three layers.
-
-export type PeerState = "ok" | "stale" | "degraded";
-
-export interface PeerStatus {
-  peer: string; // WireGuard public key
-  name: string;
-  state: PeerState;
-  last_handshake: string | null; // ISO 8601, null == never
-  endpoint: string | null;
-}
+// Mirrors gui/backend/app/models.py. Keep the two layers in sync — same contract.
 
 export interface NodeIdentity {
   name: string;
   role: string; // "spoke" | "relay"
-  public_key: string;
   wg_interface: string;
 }
 
-export interface MeshSnapshot {
-  node: NodeIdentity;
-  peers: PeerStatus[];
-  generated_at: string;
+export interface SharedFile {
+  name: string; // path/filename within the share root
+  size: number; // bytes
+  node: string; // contributing node (the share is island-wide)
+  modified: string; // ISO 8601
 }
 
-export type IdsSource = "mesh" | "usb" | "login" | "reboot";
+export interface FilesSnapshot {
+  root: string; // share root path
+  bind: string; // where the file service listens, e.g. "wg0:21"
+  files: SharedFile[];
+}
+
+export type IdsSource = "usb" | "login" | "auth" | "reboot";
 export type IdsSeverity = "info" | "warn" | "crit";
 
 export interface IdsEvent {
