@@ -1,0 +1,13 @@
+# Frontend build tooling (Mac-only; nodes get the built artifact)
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+
+# Built static assets served by the backend — rebuild on demand, not VC'd
+# (same policy as the daemon's dist/)
+backend/static/
+
+# Python
+backend/.venv/
+__pycache__/
+*.pyc

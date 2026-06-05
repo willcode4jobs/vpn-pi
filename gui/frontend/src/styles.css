@@ -1,0 +1,312 @@
+/* SU495 mesh GUI — ops-console aesthetic.
+   Warm near-black (no navy), IBM Plex Mono, dense status readout. State is
+   carried by color + left rail + column position, never by icons or emoji.
+   Something an admin stares at, not a landing page. */
+
+:root {
+  --bg: #0b0c08;
+  --bg-grid: #15160e;
+  --surface-real: #0e0f09;
+  --line: #1d1f14;
+  --line-soft: #16180f;
+
+  --fg: #ccd0c2;
+  --fg-dim: #6d7160;
+  --fg-faint: #474a3e;
+
+  --ok: #66c46e;
+  --ok-rail: #2f7a37;
+  --stale: #d8a72f;
+  --stale-rail: #8a6a1c;
+  --degraded: #e3584b;
+  --degraded-rail: #92322a;
+  --accent: #cfe0a0;
+
+  --row-h: 26px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  /* faint scanlines — a restrained CRT nod, not a gimmick */
+  background-image: repeating-linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.012) 0px,
+    rgba(255, 255, 255, 0.012) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  color: var(--fg);
+  font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+/* ---- status bar / masthead ---- */
+.statusbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #0e0f09, #0a0b07);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  letter-spacing: 0.02em;
+}
+
+.brand .glyph {
+  color: var(--accent);
+}
+
+.node-name {
+  font-weight: 600;
+  font-size: 15px;
+  color: var(--fg);
+  text-transform: lowercase;
+}
+
+.role-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  color: var(--fg-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.link-dot {
+  width: 8px;
+  height: 8px;
+  display: inline-block;
+}
+
+.link-dot.up {
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.link-dot.down {
+  background: var(--degraded);
+  box-shadow: 0 0 6px var(--degraded);
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---- alarm banner ---- */
+.alarm {
+  margin: 0;
+  padding: 8px 18px;
+  background: rgba(227, 88, 75, 0.12);
+  border-bottom: 1px solid var(--degraded-rail);
+  color: var(--degraded);
+  font-weight: 500;
+  letter-spacing: 0.03em;
+}
+
+/* ---- layout ---- */
+.grid {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 18px;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  background: var(--surface-real);
+}
+
+.panel-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #0c0d08;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--fg-dim);
+}
+
+.tally {
+  display: flex;
+  gap: 14px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
+
+/* ---- readout table ---- */
+.readout {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.readout th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--fg-faint);
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.readout td {
+  padding: 0 10px;
+  height: var(--row-h);
+  border-bottom: 1px solid var(--line-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.readout tr:last-child td {
+  border-bottom: none;
+}
+
+.row:hover td {
+  background: rgba(207, 224, 160, 0.04);
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.dim {
+  color: var(--fg-dim);
+}
+
+.peer-name {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.mono-key {
+  color: var(--fg-dim);
+}
+
+/* left rail — the colored severity bar, by position not icon */
+.col-rail {
+  width: 3px;
+  padding: 0 !important;
+}
+
+.state-ok .col-rail {
+  background: var(--ok-rail);
+}
+.state-stale .col-rail {
+  background: var(--stale-rail);
+}
+.state-degraded .col-rail {
+  background: var(--degraded-rail);
+}
+.sev-info .col-rail {
+  background: var(--fg-faint);
+}
+.sev-warn .col-rail {
+  background: var(--stale-rail);
+}
+.sev-crit .col-rail {
+  background: var(--degraded-rail);
+}
+
+/* degraded rows pull focus — position + weight, the loud line */
+.state-degraded td,
+.sev-crit td {
+  background: rgba(227, 88, 75, 0.06);
+}
+
+.state-label {
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+.s-ok,
+.v-info {
+  color: var(--ok);
+}
+.s-stale,
+.v-warn {
+  color: var(--stale);
+}
+.s-degraded,
+.v-crit {
+  color: var(--degraded);
+}
+.v-info {
+  color: var(--fg-dim);
+}
+
+.src-tag {
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+}
+
+.empty {
+  padding: 18px 12px;
+  color: var(--fg-faint);
+  font-style: italic;
+}
+
+/* ---- footer ---- */
+.footer {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 18px;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+}
