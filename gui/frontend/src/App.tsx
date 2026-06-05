@@ -25,7 +25,7 @@ export default function App() {
       )}
 
       <main className="grid">
-        <Files poll={files} />
+        <Files poll={files} refetch={files.refetch} />
         <IdsFeed poll={ids} />
       </main>
 

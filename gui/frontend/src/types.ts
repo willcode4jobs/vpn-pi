@@ -7,6 +7,7 @@ export interface NodeIdentity {
 }
 
 export interface SharedFile {
+  id: number; // SQLite row id — handle for download/delete
   name: string; // path/filename within the share root
   size: number; // bytes
   node: string; // contributing node (the share is island-wide)

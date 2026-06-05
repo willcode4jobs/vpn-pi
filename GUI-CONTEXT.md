@@ -15,8 +15,14 @@ Bind wg0 / localhost only — never a wide/public bind.
 
 One screen, the two built panels
 
-Files — the wg0-bound file share between nodes. The headline island service: proof the
-island provides its own internet-like services, not just a VPN tunnel. The first panel.
+Files — the island file share. The headline island service: proof the island provides
+its own internet-like services, not just a VPN tunnel. Upload/download/delete behind a
+FileStore interface (app/store.py) with two impls: an in-memory PLACEHOLDER (active on
+the builder PC) and the real SQLite store HOSTED ON POLARIS (GUI_FILES=sqlite). Build +
+demo on the placeholder here, push, pull on polaris, flip to sqlite — env only, no code
+change. NOTE: the SQLite store makes polaris a central server, a deliberate departure
+from the "no central host" line above, taken for scope; other nodes' GUIs reach polaris
+over wg0. Auth is still a gap — the upload endpoint must be gated before binding wg0.
 IDS feed — host/physical security events only (auditd/udev/fail2ban: USB insertion,
 console login, auth bans, unexpected reboot). Same screen as Files, by design.
 Admin view (URL path, later) — RLPF port-request flow: request a port + reason → Gemini

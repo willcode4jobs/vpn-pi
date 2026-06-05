@@ -301,6 +301,60 @@ body {
   font-style: italic;
 }
 
+/* ---- upload control (in the Files panel head) ---- */
+.btn {
+  cursor: pointer;
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  color: var(--accent);
+  background: #0c0d08;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.btn:hover {
+  border-color: var(--ok-rail);
+  background: rgba(207, 224, 160, 0.06);
+}
+
+.up-err {
+  padding: 6px 12px;
+  color: var(--degraded);
+  border-bottom: 1px solid var(--degraded-rail);
+  background: rgba(227, 88, 75, 0.08);
+  font-size: 12px;
+}
+
+/* ---- row actions (download / delete) ---- */
+.col-act {
+  width: 96px;
+}
+
+.act {
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  background: none;
+  border: none;
+  padding: 0;
+  margin-right: 12px;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.act:hover {
+  color: var(--accent);
+}
+
+.act-del:hover {
+  color: var(--degraded);
+}
+
 /* ---- footer ---- */
 .footer {
   display: flex;

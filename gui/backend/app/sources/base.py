@@ -1,9 +1,10 @@
-"""The data-source seam.
+"""The data-source seam (node identity + IDS feed).
 
-Everything the single-screen GUI reads goes through this one interface, so the
-panels never know whether they're looking at synthetic data or a real node. Today
-MockDataSource satisfies it; the real source (a wg0-bound FTP/share listing for
-files, auditd/udev/fail2ban for IDS) drops in here with zero changes upstream.
+These are the still-synthetic reads. Files are no longer here — they moved to a
+real SQLite store (app/db.py:FileStore) once uploads landed, since that surface
+needs writes (add/delete), not just reads. Node identity and the host-IDS feed
+stay behind this interface; the real source (auditd/udev/fail2ban) drops in with
+zero changes upstream.
 
 (The earlier daemon status-socket source was cut — see git history. The GUI no
 longer sits on the daemon's critical path.)
@@ -13,19 +14,15 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from app.models import FilesSnapshot, IdsEvent, NodeIdentity
+from app.models import IdsEvent, NodeIdentity
 
 
 class DataSource(Protocol):
-    """The full read surface of the GUI. Keep it small — it's the contract the
-    real per-node backends will have to satisfy."""
+    """Node identity + IDS read surface. Small on purpose — the contract the
+    real per-node sensors will have to satisfy."""
 
     def node(self) -> NodeIdentity:
         """Identity of the node this pane reports for."""
-        ...
-
-    def files(self) -> FilesSnapshot:
-        """Current island file-share listing."""
         ...
 
     def ids(self, limit: int = 100) -> list[IdsEvent]:

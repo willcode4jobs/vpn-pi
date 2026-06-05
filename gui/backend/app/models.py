@@ -29,8 +29,10 @@ class NodeIdentity(BaseModel):
 
 
 class SharedFile(BaseModel):
-    """One entry in the island file share."""
+    """One entry in the island file share. `id` is the SQLite row id — the
+    handle the GUI uses to download or delete."""
 
+    id: int
     name: str  # path/filename within the share root
     size: int  # bytes
     node: str  # which node contributed it (the share is island-wide)

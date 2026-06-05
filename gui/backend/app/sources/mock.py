@@ -1,10 +1,10 @@
-"""Synthetic data source — runs the GUI with no node, no wg, no file server.
+"""Synthetic data source — node identity + host-IDS feed with no real node.
 
-Stands in for the real per-node backends so the screen can be built and the
-layout locked before the island file share and the host sensors exist. Files are
-a fixed island listing; IDS events are seeded host-security records, newest
-first. Deterministic given a start time — no randomness — so a reload doesn't
-reshuffle, but timestamps advance off boot so the feed looks live under polling.
+Stands in for the real per-node sensors so the screen can be built before
+auditd/udev/fail2ban wiring exists. Files are NOT here — they're a real SQLite
+store now (app/db.py). IDS events are seeded host-security records, newest first.
+Deterministic given a start time — no randomness — so a reload doesn't reshuffle,
+but timestamps advance off boot so the feed looks live under polling.
 """
 
 from __future__ import annotations
@@ -12,26 +12,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from app.models import (
-    FilesSnapshot,
     IdsEvent,
     IdsSeverity,
     IdsSource,
     NodeIdentity,
-    SharedFile,
 )
 
 _SELF = NodeIdentity(name="polaris", role="relay", wg_interface="wg0")
-
-# The island file share, wg0-bound. (name, size bytes, contributing node, age-at-epoch secs)
-_SHARE_ROOT = "/srv/island"
-_SHARE_BIND = "wg0:21"
-_FILES = [
-    ("topology-v3.pdf", 482_113, "polaris", 1_800),
-    ("harden-base.sh", 9_244, "vega", 5_400),
-    ("capture-2026-06-04.pcap", 18_446_201, "sirius", 240),
-    ("threat-model.md", 31_002, "polaris", 86_400),
-    ("altair-keys.tar.gz.age", 2_103, "altair", 600),
-]
 
 
 def _now() -> datetime:
@@ -47,19 +34,6 @@ class MockDataSource:
 
     def node(self) -> NodeIdentity:
         return _SELF
-
-    def files(self) -> FilesSnapshot:
-        files = [
-            SharedFile(
-                name=name,
-                size=size,
-                node=node,
-                modified=self._epoch - timedelta(seconds=age_s),
-            )
-            for name, size, node, age_s in _FILES
-        ]
-        files.sort(key=lambda f: f.modified, reverse=True)  # newest first
-        return FilesSnapshot(root=_SHARE_ROOT, bind=_SHARE_BIND, files=files)
 
     def ids(self, limit: int = 100) -> list[IdsEvent]:
         # Fixed seed host-security events, timestamped relative to boot, newest

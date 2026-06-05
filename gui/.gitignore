@@ -11,3 +11,8 @@ backend/static/
 backend/.venv/
 __pycache__/
 *.pyc
+
+# SQLite island file store — runtime data, not VC'd
+backend/*.db
+backend/*.db-journal
+backend/*.db-wal

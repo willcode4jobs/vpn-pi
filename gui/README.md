@@ -15,23 +15,47 @@ See `../GUI-CONTEXT.md` for scope and the non-negotiables.
 gui/
 ├── backend/                 FastAPI, binds 127.0.0.1 only
 │   └── app/
-│       ├── main.py          API: /api/node, /api/files, /api/ids
+│       ├── main.py          API: /api/node, /api/files (+upload/download/delete), /api/ids
+│       ├── store.py         FileStore interface + PlaceholderFileStore + build_store()
+│       ├── db.py            SqliteFileStore — the real, durable store (on polaris)
 │       ├── models.py        wire models (mirror frontend src/types.ts)
 │       └── sources/
-│           ├── base.py      DataSource protocol — the one read surface
-│           └── mock.py      synthetic node/files/ids, runs with no node or wg
+│           ├── base.py      DataSource protocol — node + IDS read surface
+│           └── mock.py      synthetic node/ids, runs with no node or sensors
 └── frontend/                Vite + React + TypeScript (.tsx), built on the Mac
     └── src/
         ├── App.tsx          one screen: StatusBar + Files + IdsFeed
-        ├── api.ts           2s polling hooks; stale-flag = silent-node alarm
+        ├── api.ts           2s polling hooks (+ upload/delete); stale = silent-node alarm
         └── components/
 ```
 
-## Data source
+## Data sources
 
-Mock-only today. Everything reads through `sources/base.py:DataSource`, so the
-real per-node source — a wg0-bound FTP/share listing for files, auditd/udev/
-fail2ban for IDS — drops in behind the same interface with no upstream changes.
+- **Files — interface + two implementations** (`store.py`). One `FileStore`
+  surface (`list/add/get/delete`), selected by `GUI_FILES`:
+  - **`placeholder`** (default) — `PlaceholderFileStore`, in-memory. **The active
+    store on the builder PC**, where the real DB (which lives on polaris) isn't
+    present. Upload/download/delete all work for dev/demo; nothing persists across
+    a restart. The panel head shows `placeholder (in-memory)` so it's obvious.
+  - **`sqlite`** — `SqliteFileStore` (`db.py`), durable, content stored inline as
+    a BLOB. **The real store, on polaris** (the island's file authority). Other
+    nodes' GUIs reach it over wg0 — a deliberate central-host scope choice.
+  - Endpoints either way: `POST /api/files` (upload), `GET /api/files/{id}/download`,
+    `DELETE /api/files/{id}`.
+- **Node + IDS — mock.** Still synthetic behind `sources/base.py:DataSource`; the
+  real per-node sensors (auditd/udev/fail2ban) drop in with no upstream change.
+
+## Build → push → run on polaris
+
+The builder runs the placeholder; after you push and pull onto polaris, flip the
+file store to the real SQLite. No code change — env only:
+
+```bash
+# on polaris, after `git pull`:
+GUI_FILES=sqlite GUI_DB_PATH=/var/lib/vpn-pi/island.db \
+GUI_BIND=<wg0-addr> GUI_PORT=8787 \
+  ./.venv/bin/python -m app.main
+```
 
 ## Run it (dev)
 
@@ -71,5 +95,8 @@ The backend serves the built UI at `/`. Override the bind for wg0 with
 
 ## Status
 
-Skeleton: Files panel + host-IDS feed, one node, mock data. **Not yet:** real
-file-share backend, real host sensors, admin/RLPF view, auth, wg0 bind hardening.
+Files panel with **upload / download / delete** through the `FileStore` seam —
+in-memory placeholder on the builder, real SQLite on polaris (`GUI_FILES=sqlite`).
+Host-IDS feed on mock. **Not yet:** real host sensors, admin/RLPF view, auth (the
+upload endpoint is unauthenticated — fine on loopback, must be gated before the
+backend binds wg0), per-uploader identity, wg0 bind hardening.
