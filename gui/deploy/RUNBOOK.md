@@ -4,9 +4,14 @@ Stand up the island GUI backend on **polaris** with the real, durable **SQLite**
 file store (`GUI_FILES=sqlite`). polaris is the file authority: every other node
 runs `GUI_FILES=remote` and forwards file ops here (see `../README.md` §Deployment).
 
+**Role:** polaris is **headless, API-only** — it runs the SQLite file store and
+serves `/api/*`, nothing else. It does **not** serve a browser UI; the frontend is
+served by the nodes that need it (Option B). So the frontend steps below are
+**optional and skipped by default** — no `static/` bundle, no scp.
+
 **Safety posture:** the upload/delete API has **no auth yet**. This runbook brings
-polaris up **loopback-only** and reaches it over an SSH tunnel. Binding to wg0 is a
-separate, gated step (§9) — do not do it until auth lands.
+polaris up **loopback-only**. Binding to wg0 is a separate, gated step (§9) — do not
+do it until auth lands.
 
 Run everything on polaris over SSH unless it says "(Mac)". Reach polaris by IP —
 mDNS (`polaris.local`) is dead behind the hardening firewall.
@@ -108,18 +113,18 @@ ls -l /var/lib/vpn-pi/island.db
 
 ---
 
-## 6. Ship the frontend (Mac)
+## 6. Ship the frontend (Mac) — SKIP for headless polaris
 
-The backend serves the built UI at `/`. Build on the Mac and push the static
-bundle (polaris has no npm):
+polaris is API-only, so **skip this**. The UI bundle goes to the nodes that serve
+a browser UI (sirius/altair/…), not to the file authority. For reference, that
+push (run from the Mac, per node) is:
 
 ```bash
-# (Mac) from the repo root
-gui/deploy/push-gui.sh polaris
+# only on nodes that serve the UI — NOT polaris
+gui/deploy/push-gui.sh <node>
 ```
 
-This rsyncs `gui/backend/static/` to polaris. (Without it, the API works but `/`
-404s — fine for headless, but you'll want the UI.)
+On polaris, `/` simply 404s and `/api/*` is the whole surface — by design.
 
 ---
 
@@ -145,18 +150,18 @@ curl -s 127.0.0.1:8787/api/health        # {"status":"ok"}
 
 ---
 
-## 8. View the UI while loopback-only (SSH tunnel)
+## 8. Reach the API from the Mac while loopback-only (SSH tunnel)
 
-Because the API is unauthenticated, it stays on loopback. Reach it from the Mac
-without exposing anything to the island:
+The API is unauthenticated, so it stays on loopback. To hit it from the Mac
+without exposing anything to the island, forward the port over SSH:
 
 ```bash
 # (Mac)
 ssh -N -L 8787:127.0.0.1:8787 polaris
 ```
 
-Then open <http://127.0.0.1:8787/> in the Mac browser. Close the SSH session to
-drop access.
+Then `curl 127.0.0.1:8787/api/files` from the Mac (a browser at `/` 404s —
+polaris serves no UI). Close the SSH session to drop access.
 
 ---
 
@@ -229,6 +234,6 @@ sudo systemctl daemon-reload
 | `/api/files` root says `placeholder (in-memory)` | `GUI_FILES` not set / not `sqlite` | check the unit's `Environment=GUI_FILES=sqlite`; `systemctl show su495-gui -p Environment` |
 | 500 on upload, `ModuleNotFoundError: multipart` | deps not installed in the venv | re-run §3 `pip install -r requirements.txt` |
 | service fails to start, `Permission denied` on the DB | `/var/lib/vpn-pi` not owned by `billy` / not in `ReadWritePaths` | redo §4 ownership; confirm `ReadWritePaths=/var/lib/vpn-pi` in the unit |
-| `/` 404s but `/api/*` works | frontend bundle not shipped | run §6 `push-gui.sh polaris` |
+| `/` 404s but `/api/*` works | no frontend bundle | expected on headless polaris — it's API-only (§6) |
 | can't reach `:8787` from another node | loopback-only (by design) | that's §9, and it's gated on auth |
 | `polaris.local` won't resolve | mDNS dropped by the firewall | reach polaris by IP (known gotcha) |
