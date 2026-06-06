@@ -165,7 +165,10 @@ def build_store() -> FileStore:
 
         default_db = Path(__file__).resolve().parent.parent / "island.db"
         path = os.environ.get("GUI_DB_PATH", str(default_db))
-        return SqliteFileStore(path, root_label=f"polaris:{Path(path).name}", bind=bind)
+        # Label the store by the node that owns it (the file authority) — not a
+        # hardcoded name, so it stays correct if the authority moves (e.g. to vega).
+        node = os.environ.get("GUI_NODE_NAME", "polaris")
+        return SqliteFileStore(path, root_label=f"{node}:{Path(path).name}", bind=bind)
     if kind == "remote":
         from app.remote import RemoteFileStore
 
