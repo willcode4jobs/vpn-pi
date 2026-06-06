@@ -21,6 +21,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, Up
 
 from app.models import FilesSnapshot, IdsEvent, NodeIdentity, SharedFile
 from app.peers import resolve as resolve_peer
+from app.relay import RelayBatch, RelayDeposit, build_relay
 from app.sources import DataSource, build_data_source
 from app.store import FileNotFound, build_store
 
@@ -50,6 +51,13 @@ _PORT = int(os.environ.get("GUI_PORT", "8787"))
 # Cap upload size — an island share, not a CDN. Reject oversized before buffering
 # the whole body in memory. 64 MiB is generous for the demo.
 _MAX_UPLOAD = int(os.environ.get("GUI_MAX_UPLOAD", str(64 * 1024 * 1024)))
+
+# IDS blind-relay buffer: present only on the hub (GUI_IDS_RELAY=1), else None
+# and the relay routes refuse. The hub buffers opaque ciphertext — see app/relay.py.
+RELAY = build_relay()
+
+# Cap a single sealed blob — a host alert, not a payload. Reject oversized deposits.
+_MAX_BLOB = int(os.environ.get("GUI_IDS_BLOB_MAX", str(64 * 1024)))
 
 app = FastAPI(title="su495-island-gui", version="0.3.0-skeleton")
 
@@ -118,6 +126,30 @@ def delete_file(file_id: int, _peer: str = Depends(require_peer)) -> Response:
 def get_ids(limit: int = 100, _peer: str = Depends(require_peer)) -> list[IdsEvent]:
     """Host-security (IDS) feed, most-recent-first. Polled by the IDS panel."""
     return SOURCE.ids(limit=limit)
+
+
+# --- IDS blind relay (hub only). Opaque ciphertext in, opaque ciphertext out. ---
+
+@app.post("/api/ids/relay", status_code=201)
+def relay_deposit(body: RelayDeposit, peer: str = Depends(require_peer)) -> dict[str, int]:
+    """A node deposits one sealed alert. Hub-only; the hub stores it verbatim and
+    never decrypts. The deposited `node` must match the authenticated caller — a
+    cheap integrity gate (the real guarantee is the signature inside the blob)."""
+    if RELAY is None:
+        raise HTTPException(status_code=503, detail="relay not enabled on this node")
+    if body.node != peer:
+        raise HTTPException(status_code=403, detail="blob node does not match caller")
+    if len(body.ct) > _MAX_BLOB:
+        raise HTTPException(status_code=413, detail=f"blob exceeds {_MAX_BLOB} byte limit")
+    return {"id": RELAY.deposit(body.node, body.seq, body.ct)}
+
+
+@app.get("/api/ids/relay", response_model=RelayBatch)
+def relay_drain(since: int = 0, limit: int = 500, _peer: str = Depends(require_peer)) -> RelayBatch:
+    """The master drains blobs newer than its cursor. Hub-only."""
+    if RELAY is None:
+        raise HTTPException(status_code=503, detail="relay not enabled on this node")
+    return RELAY.drain(since=since, limit=limit)
 
 
 @app.get("/api/health")
