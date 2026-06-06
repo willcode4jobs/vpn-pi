@@ -50,8 +50,17 @@ committed to (`docs/worklog-2026-06-05.md`, "IDS mesh view → polaris, not vega
 | [03-crypto-and-keys.md](03-crypto-and-keys.md) | Envelope format, library choice, key generation / distribution / registry |
 | [04-connectivity-and-deployment.md](04-connectivity-and-deployment.md) | Topology reality, the relay port, per-node deploy (incl. sirius SELinux), admin access |
 | [05-implementation-plan.md](05-implementation-plan.md) | Build sequence, file-by-file changes, verification, honest estimate |
+| [BUILD-STATUS.md](BUILD-STATUS.md) | What's actually implemented vs the plan (live status) |
+
+Operational: [`gui/deploy/RUNBOOK-ids-nodes.md`](../../gui/deploy/RUNBOOK-ids-nodes.md)
+— set up a Linux node for the IDS mesh, including the SELinux policy for enforcing
+nodes (sirius).
 
 ## Status
 
-Planning. Nothing built yet. Branch when we start docs: `docs/ids-planning`
-(commits `dox:`). Implementation lands on a `feat/ids-*` branch later.
+**Implementation underway on `feat/ids-mesh`.** Steps 1–3 (real local feed,
+crypto envelope + registry, hub blind relay) are committed and unit-tested (34
+tests); Steps 4–5 (shipper + master aggregator, then multi-node polish +
+view-password) are pending. See [BUILD-STATUS.md](BUILD-STATUS.md) for detail.
+Planning docs were committed on `docs/ids-planning` (`dox:`); code is `feat:` on
+`feat/ids-mesh`.
