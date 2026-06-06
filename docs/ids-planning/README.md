@@ -29,6 +29,8 @@ committed to (`docs/worklog-2026-06-05.md`, "IDS mesh view → polaris, not vega
 | Aggregate view access | **Same GUI, served by the master**, browser-viewable via SSH local-forward, gated by a view-password | Keeps the hub blind; same React app as the fileshare; matches "Master admin via SSH/CLI" (CLAUDE.md) |
 | Crypto library | **PyNaCl** (`SealedBox` + Ed25519) | Misuse-resistant; purpose-built. `cryptography` is the fallback if wheels fight us (§03) |
 | `node` on `IdsEvent` | **Add an explicit field**, set from the verified signing key | Separates "who reported" from "what it's about"; trustworthy attribution, not a free-text parse (§01) |
+| IDS scope | **Host events only** (USB/LOGIN/AUTH/REBOOT) | Daemon/tunnel alerts deliberately excluded — the cut status-socket coupling stays cut; re-addable later as another signed source through the same relay |
+| Topology | **Hub-and-spoke, settled** — polaris (master) + vega (hub) both load-bearing | spoke↔spoke is dead; a P2P pivot would gut blind-relay + master-pull (see worklog 2026-06-06) |
 
 ## Resolved during planning (was: open)
 
