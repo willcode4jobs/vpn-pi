@@ -70,7 +70,10 @@ class IdsEvent(BaseModel):
 
     id: str
     at: datetime
+    node: str | None = None  # originating node, set by the master from the VERIFIED
+    #                          signing identity (not self-reported). None on a
+    #                          node's own local feed; populated in the mesh view.
     source: IdsSource
     severity: IdsSeverity
-    subject: str  # node/device/user the event is about
+    subject: str  # the device/user/ip the event is about
     message: str  # human-readable, already rendered

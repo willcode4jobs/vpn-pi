@@ -25,13 +25,9 @@ def build_data_source() -> DataSource:
 
         return HostDataSource()
     if kind == "mesh":
-        try:
-            from app.sources.mesh import MeshDataSource
-        except ImportError as e:  # not built until the aggregator lands
-            raise RuntimeError(
-                "GUI_IDS=mesh requires the mesh aggregator (planned Step 4, not yet built)"
-            ) from e
-        return MeshDataSource()
+        from app.sources.mesh import build_mesh_source
+
+        return build_mesh_source()
     from app.sources.mock import MockDataSource
 
     return MockDataSource()

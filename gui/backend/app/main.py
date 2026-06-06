@@ -62,6 +62,15 @@ _MAX_BLOB = int(os.environ.get("GUI_IDS_BLOB_MAX", str(64 * 1024)))
 app = FastAPI(title="su495-island-gui", version="0.3.0-skeleton")
 
 
+@app.on_event("startup")
+def _start_shipper() -> None:
+    """On a sensor node (node key + relay URL configured), ship this node's local
+    feed to the hub in a background thread. No-op on the master/hub-only nodes."""
+    from app.ids_shipper import start_shipper
+
+    start_shipper(SOURCE)
+
+
 @app.get("/api/node", response_model=NodeIdentity)
 def get_node(_peer: str = Depends(require_peer)) -> NodeIdentity:
     """Identity of this node. Polled by the masthead."""
