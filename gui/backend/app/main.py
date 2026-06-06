@@ -21,10 +21,12 @@ from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, Up
 
 from app.models import FilesSnapshot, IdsEvent, NodeIdentity, SharedFile
 from app.peers import resolve as resolve_peer
-from app.sources import DataSource, MockDataSource
+from app.sources import DataSource, build_data_source
 from app.store import FileNotFound, build_store
 
-SOURCE: DataSource = MockDataSource()
+# IDS/identity source: mock (default) | host (real journald) | mesh (Step 4).
+# Selected by GUI_IDS — see app/sources/factory.py.
+SOURCE: DataSource = build_data_source()
 
 
 def require_peer(request: Request) -> str:
