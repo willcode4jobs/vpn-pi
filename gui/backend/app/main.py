@@ -17,13 +17,26 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 
 from app.models import FilesSnapshot, IdsEvent, NodeIdentity, SharedFile
+from app.peers import resolve as resolve_peer
 from app.sources import DataSource, MockDataSource
 from app.store import FileNotFound, build_store
 
 SOURCE: DataSource = MockDataSource()
+
+
+def require_peer(request: Request) -> str:
+    """Authenticate the caller by its wg0 source address and return that address.
+    The allowlist (app/peers.py) is the gate: an address not on it — or a missing
+    client — is rejected with 403. The returned IP is the trustworthy identity
+    stored as a file's adder node (raw IP, no name translation)."""
+    client_ip = request.client.host if request.client else None
+    peer = resolve_peer(client_ip)
+    if peer is None:
+        raise HTTPException(status_code=403, detail="unknown wg0 peer — not on the island allowlist")
+    return peer
 
 # File store: placeholder (in-memory) on the builder, SQLite on polaris. The
 # factory reads GUI_FILES / GUI_DB_PATH — see app/store.py.
@@ -40,13 +53,13 @@ app = FastAPI(title="su495-island-gui", version="0.3.0-skeleton")
 
 
 @app.get("/api/node", response_model=NodeIdentity)
-def get_node() -> NodeIdentity:
+def get_node(_peer: str = Depends(require_peer)) -> NodeIdentity:
     """Identity of this node. Polled by the masthead."""
     return SOURCE.node()
 
 
 @app.get("/api/files", response_model=FilesSnapshot)
-def get_files() -> FilesSnapshot:
+def get_files(_peer: str = Depends(require_peer)) -> FilesSnapshot:
     """Island file-share listing from SQLite. Polled by the Files panel."""
     return FILES.list()
 
@@ -54,9 +67,12 @@ def get_files() -> FilesSnapshot:
 @app.post("/api/files", response_model=SharedFile, status_code=201)
 async def upload_file(
     file: UploadFile = File(...),
-    node: str | None = Form(default=None),
+    peer: str = Depends(require_peer),
 ) -> SharedFile:
-    """Store an uploaded file in the island DB. `node` defaults to this node."""
+    """Store an uploaded file in the island DB. The adder node is the caller's
+    authenticated wg0 IP (require_peer) — not a client-supplied value and not
+    this backend's own name — so a file uploaded from 10.42.0.5 reads
+    `10.42.0.5` even though the store lives on vega."""
     content = await file.read()
     if len(content) > _MAX_UPLOAD:
         raise HTTPException(
@@ -67,13 +83,13 @@ async def upload_file(
     return FILES.add(
         name=name,
         content=content,
-        node=node or SOURCE.node().name,
+        node=peer,
         content_type=file.content_type,
     )
 
 
 @app.get("/api/files/{file_id}/download")
-def download_file(file_id: int) -> Response:
+def download_file(file_id: int, _peer: str = Depends(require_peer)) -> Response:
     """Stream one file back out of the DB as an attachment."""
     try:
         name, content_type, content = FILES.get(file_id)
@@ -87,7 +103,7 @@ def download_file(file_id: int) -> Response:
 
 
 @app.delete("/api/files/{file_id}", status_code=204)
-def delete_file(file_id: int) -> Response:
+def delete_file(file_id: int, _peer: str = Depends(require_peer)) -> Response:
     """Remove a file from the island share."""
     try:
         FILES.delete(file_id)
@@ -97,7 +113,7 @@ def delete_file(file_id: int) -> Response:
 
 
 @app.get("/api/ids", response_model=list[IdsEvent])
-def get_ids(limit: int = 100) -> list[IdsEvent]:
+def get_ids(limit: int = 100, _peer: str = Depends(require_peer)) -> list[IdsEvent]:
     """Host-security (IDS) feed, most-recent-first. Polled by the IDS panel."""
     return SOURCE.ids(limit=limit)
 

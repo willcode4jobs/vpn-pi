@@ -69,16 +69,19 @@ class FileStore(Protocol):
 def seed(store: FileStore) -> None:
     """Shared seed content — real (tiny) bytes, so download works on the seeds
     too. Used by both stores' seed_if_empty()."""
+    # Adder is recorded as the wg0 IP (no name translation) — match that here so
+    # a freshly-seeded store looks like real uploads. 10.42.0.1=polaris,
+    # 10.42.0.2=vega (see app/peers.py / docs/worklog-2026-06-05.md).
     store.add(
         "README.island.txt",
         b"island file share - upload via the GUI. wg0-only, never public.\n",
-        node="polaris",
+        node="10.42.0.1",
         content_type="text/plain",
     )
     store.add(
         "harden-base.sh.note",
         b"placeholder - the real harden-base.sh lives in pi-deployment/.\n",
-        node="vega",
+        node="10.42.0.2",
         content_type="text/plain",
     )
 
