@@ -58,6 +58,13 @@ network needed (everything is injected).
   dedupe `(node, seq)`, detect gaps, merge with the local feed. Unblocks
   `GUI_IDS=mesh`.
 
+### Step 4a — daemon connection sensor
+- `IdsSource.TUNNEL` (`models.py`) + `app/sources/daemon.py` — read the
+  `wg-selfheal` status socket, map `degraded/stale` → `TUNNEL` events
+  (best-effort), compose with `HostDataSource`. Brings daemon tunnel warnings
+  into the feed; aggregated mesh-wide by the relay. Reuses the daemon's
+  `status.Server`; resurrects the cut `socket.py` reader. (Scope added 2026-06-06.)
+
 ### Step 5 — multi-node polish
 - `node` field on `IdsEvent` (`models.py`) + a NODE column in the frontend
   (`IdsFeed.tsx`, `types.ts`), set from the **verified** identity.

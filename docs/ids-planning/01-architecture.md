@@ -70,6 +70,22 @@ Shells to `journalctl` (no new dep, same discipline as `RemoteFileStore`). Reads
 need the `systemd-journal` group on the service user — never run as root (§04).
 `node()` is unchanged (returns this node's `NodeIdentity`).
 
+### 3.1a Daemon source — `app/sources/daemon.py` (new)
+The `wg-selfheal` daemon is the IDS **connection sensor**. Each node's backend
+reads its local daemon **status socket** (`/run/wg-selfheal/status.sock`,
+`GUI_DAEMON_SOCK`), which already serves classified events
+(`degraded→crit`, `stale→warn`, `recovered→info` — see `gui/docs/DATA-PIPELINE.md`),
+and maps the warnings to `IdsEvent` with a new `IdsSource.TUNNEL`. Resurrects the
+small reader that was cut (`socket.py`), against the daemon's existing
+`status.Server`.
+
+**Best-effort, not coupled:** a one-shot snapshot read that **degrades to empty**
+if the socket is absent/daemon down — exactly like `HostDataSource`. This is *not*
+the cut GUI-critical-path live-mesh feed; daemon warnings only *enrich* the IDS
+feed, which works without them. The node's feed = `HostDataSource` (journald) +
+`DaemonSource` (socket) merged; the shipper sends the union. Aggregated on the
+master, this gives **whole-mesh** tunnel warnings (each node ships its own).
+
 ### 3.2 Alert shipper — `app/ids_shipper.py` (new)
 An asyncio background task started on node backend startup. Tails new
 `IdsEvent`s (tracked by a per-node monotonic **sequence number**), seals + signs

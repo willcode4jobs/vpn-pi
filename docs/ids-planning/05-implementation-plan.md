@@ -11,9 +11,10 @@ Each step is provable on its own before the next — no big-bang integration.
 | 2 | Envelope module + keygen + unit round-trip | sign→seal→open→verify works offline | ~0.5 d |
 | 3 | Hub relay routes + bounded sqlite buffer | deposit/drain of opaque blobs, allowlist-gated | ~0.5 d |
 | 4 | Shipper (one node) → `MeshDataSource` (master) | end-to-end with master + hub + ONE endpoint | ~1 d |
+| 4a | `DaemonSource` (status socket → `TUNNEL` events) + composite node feed | daemon tunnel warnings flow mesh-wide via the relay | ~0.5 d |
 | 5 | Fan-out, `node` field + FE column, gap/heartbeat, **view-password** | the real multi-node view | ~1 d |
 
-**~3.5–4 days of code.** Separate and additive: solving **sirius SELinux `/opt`**
+**~4–4.5 days of code.** Separate and additive: solving **sirius SELinux `/opt`**
 (§04) — could be a day on its own; the code does not depend on it.
 
 ## 2. File-by-file
@@ -27,6 +28,16 @@ Each step is provable on its own before the next — no big-bang integration.
 - `gui/backend/app/sources/factory.py` (new) — `build_data_source()` reading
   `GUI_IDS` (`mock|host|mesh`), mirroring `build_store()` in `app/store.py`
   (local imports for the heavy/optional backends).
+
+**Step 4a — daemon source** (the `wg-selfheal` connection sensor)
+- `gui/backend/app/models.py` — add `IdsSource.TUNNEL`.
+- `gui/backend/app/sources/daemon.py` (new) — `DaemonSource`: one-shot read of
+  `/run/wg-selfheal/status.sock` (`GUI_DAEMON_SOCK`), map `degraded/stale`
+  events → `TUNNEL` IdsEvents; degrade-to-empty if absent. Resurrects the cut
+  `socket.py` reader against the daemon's existing `status.Server`.
+- Compose the node feed: when `GUI_IDS=host` and a daemon sock is set, merge
+  `HostDataSource` + `DaemonSource` (factory wires the composite). The shipper
+  then ships the union; the master aggregates it mesh-wide. See §01 §3.1a.
 
 **Step 2 — crypto**
 - `gui/backend/app/ids_crypto.py` (new) — `seal_sign(payload, node_signing_key,
