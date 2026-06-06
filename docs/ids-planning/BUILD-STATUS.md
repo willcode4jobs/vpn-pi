@@ -45,18 +45,29 @@ What's actually implemented on `feat/ids-mesh` so far, versus the plan
   503). Deposit rejects `node != caller` (403) and oversized blobs (413).
 - Tests: `tests/test_relay.py` (5) + route-guard smoke (503/403/413/happy path).
 
-**Totals:** 34 unit tests passing. The full suite runs on the builder (Mac) —
+### Step 4 — ship + aggregate (the spine)  (`feat:` 610deb6)
+- **`gui/backend/app/ids_shipper.py`** — per-node daemon thread: tails the local
+  feed, seals+signs unsent events, POSTs to the hub relay. Per-node monotonic
+  `seq` **persisted across restarts**; a seq is consumed only on a successful
+  POST (hub down → retry, nothing lost); shipped events tracked by id so a
+  journal re-read doesn't re-ship. Started from `main.py` startup; **no-op**
+  unless a node key + relay URL are set (so the master/hub-only never ship).
+- **`gui/backend/app/sources/mesh.py`** — `MeshDataSource` (`GUI_IDS=mesh`, master
+  only): pull the relay since a cursor, open+verify each blob, cross-check the
+  hub-visible `{node,seq}` against the authenticated inner copy, dedupe by
+  `(node,seq)`, merge with the master's own local feed. **Attribution = the
+  verified signing identity.** Fail-closed (no key / unknown signer / tamper /
+  mismatch → dropped).
+- `IdsEvent` gained an optional `node` (set from the verified identity). Factory
+  wires `GUI_IDS=mesh → build_mesh_source`.
+- Tests: `test_mesh_source.py` (6) + `test_ids_shipper.py` (5), **plus an
+  in-process spine smoke** (ship → opaque relay → pull → decrypt → attribute).
+
+**Totals:** 45 unit tests passing. The full suite runs on the builder (Mac) —
 `./.venv/bin/python -m unittest discover -s tests` — with no journal, keys, or
 network needed (everything is injected).
 
 ## Not built yet
-
-### Step 4 — ship + aggregate (the integration layer)
-- `app/ids_shipper.py` — asyncio task per node: tail new `IdsEvent`s by per-node
-  `seq`, seal+sign, POST to the hub with retry/backoff.
-- `app/sources/mesh.py` — `MeshDataSource`: pull the hub buffer, open+verify,
-  dedupe `(node, seq)`, detect gaps, merge with the local feed. Unblocks
-  `GUI_IDS=mesh`.
 
 ### Step 4a — daemon connection sensor
 - `IdsSource.TUNNEL` (`models.py`) + `app/sources/daemon.py` — read the
