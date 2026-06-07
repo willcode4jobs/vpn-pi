@@ -169,9 +169,10 @@ targets `~`, so rsync it to `/opt` instead):
 # (Mac) build, then ship to /opt:
 ( cd gui/frontend && npm run build )
 rsync -az gui/backend/static/ sirius:/tmp/static/
-ssh sirius 'sudo rsync -a --delete /tmp/static/ /opt/vpn-pi/gui/backend/static/ && \
-            sudo restorecon -Rv /opt/vpn-pi/gui/backend/static && \
-            sudo systemctl restart su495-gui.service'
+# -t allocates a TTY so the over-ssh sudo can prompt for your password:
+ssh -t sirius 'sudo rsync -a --delete /tmp/static/ /opt/vpn-pi/gui/backend/static/ && \
+               sudo restorecon -Rv /opt/vpn-pi/gui/backend/static && \
+               sudo systemctl restart su495-gui.service'
 ```
 
 ## 8. Verify
