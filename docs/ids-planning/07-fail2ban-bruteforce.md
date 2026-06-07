@@ -54,6 +54,23 @@ Tradeoff (accepted for zero added privilege):
 `/api/jails` degrades to `[]` (panel: "no jails reporting") if the journal is
 unreadable; the ban/attempt *events* in the IDS feed are unaffected.
 
+### 3a. PREREQUISITE — fail2ban must log to the journal
+This is the one that bites: on Debian, fail2ban's default `logtarget` is the
+**file** `/var/log/fail2ban.log`, so its `Ban`/`Unban` lines **never reach the
+journal** — and `fail2ban-client status` still shows the ban, masking it. Then the
+JAILS panel and the IDS feed's ban events stay empty even though a ban exists.
+(The brute-force *attempt* rows come from `sshd`→journald and work regardless;
+it's fail2ban's own action lines that need this.)
+
+```ini
+# /etc/fail2ban/fail2ban.local
+[Definition]
+logtarget = SYSTEMD-JOURNAL
+```
+then `sudo systemctl restart fail2ban`. Verify a test ban lands in the journal:
+`sudo fail2ban-client set sshd banip 203.0.113.99` →
+`journalctl -u fail2ban --since -2min | grep 203.0.113.99` (then `unbanip`).
+
 ## 4. Noise + cost control (from the debug pass)
 
 - Attempts are **aggregated per IP** (one `WARN`, not one-per-attempt) with a

@@ -23,6 +23,12 @@ cd gui/backend
 ./.venv/bin/pip install --upgrade pip && ./.venv/bin/pip install -r requirements.txt
 ./.venv/bin/python -c "import nacl; print('deps ok')"
 sudo usermod -aG systemd-journal "$USER"  # IDS + fail2ban sensors; no sudo beyond this
+
+# fail2ban must log to the JOURNAL, not /var/log/fail2ban.log (Debian default) —
+# else its ban lines never reach journalctl and the JAILS panel / ban events stay
+# empty (fail2ban-client status still shows the ban, which masks it):
+printf '[Definition]\nlogtarget = SYSTEMD-JOURNAL\n' | sudo tee /etc/fail2ban/fail2ban.local >/dev/null
+sudo systemctl restart fail2ban
 ```
 
 ## 1. Keys — SKIP if `/var/lib/vpn-pi/ids/` is already populated
@@ -93,3 +99,5 @@ curl -s <this node's wg0 addr>:8787/api/health        # {"status":"ok"}
 3. **Don't regen keys** if `/var/lib/vpn-pi/ids/` exists — master-key regen = fleet break.
 4. UI nodes: `push-gui.sh` **before** the restart.
 5. polaris is at **10.42.0.1**, not loopback; secrets go in `/etc/vpn-pi/gui.env`.
+6. **fail2ban `logtarget = SYSTEMD-JOURNAL`** — else bans never hit the journal and
+   the JAILS panel / ban events stay empty (the CLI status hides it).
