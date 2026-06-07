@@ -19,13 +19,45 @@ Python 3.14 (use 3.12 — §2); has a local browser → views its UI at
 
 ## 1. Code → `/opt` (NOT `/home` — this *is* the SELinux fix)
 ```bash
+sudo dnf install -y git-core
 sudo mkdir -p /opt/vpn-pi && sudo chown -R brichardt:brichardt /opt/vpn-pi
-# clone (deploy key) OR rsync from the Mac — into /opt, not ~:
+```
+
+### 1a. Deploy key (read-only — sirius pulls; pushes stay on the Mac)
+Generate a passphrase-less keypair **on sirius**, register the public half as a
+read-only deploy key on the repo, and pin it for `github.com`:
+```bash
+# on sirius, as brichardt
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_github -N "" -C "sirius-deploy"
+cat ~/.ssh/id_ed25519_github.pub        # copy this line
+```
+On GitHub: **repo → Settings → Deploy keys → Add deploy key** → paste the public
+key, title `sirius`, **leave "Allow write access" UNCHECKED** (read-only). Then on
+sirius:
+```bash
+cat >> ~/.ssh/config <<'EOF'
+
+Host github.com
+  HostName github.com
+  User git
+  IdentityFile ~/.ssh/id_ed25519_github
+  IdentitiesOnly yes
+EOF
+chmod 600 ~/.ssh/config ~/.ssh/id_ed25519_github
+ssh -T git@github.com                   # "Hi <owner>/vpn-pi! ... does not provide shell access" = success
+```
+> A repo deploy key is scoped to **this one repo** (unlike an account SSH key) and
+> read-only here — sirius can pull but never push, which matches how this fleet
+> works (the Mac owns pushes).
+
+### 1b. Clone
+```bash
 git clone git@github.com:<owner>/vpn-pi.git /opt/vpn-pi
-#   (Mac alt) rsync -az --delete --exclude .git --exclude .venv --exclude __pycache__ \
-#             --exclude static ~/Desktop/projects/initfolder/vpn-pi/ sirius:/opt/vpn-pi/
 cd /opt/vpn-pi && git checkout feat/ids-mesh
 ```
+> (No-git alternative — rsync from the Mac, skips 1a entirely:
+> `rsync -az --delete --exclude .git --exclude .venv --exclude __pycache__ --exclude static
+> ~/Desktop/projects/initfolder/vpn-pi/ sirius:/opt/vpn-pi/`)
 
 ## 2. Python 3.12 venv (in `/opt`)
 ```bash
