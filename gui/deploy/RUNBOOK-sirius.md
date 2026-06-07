@@ -1,154 +1,74 @@
-# Deploy runbook — island GUI on sirius
+# Ground-up runbook — sirius (x86 Linux endpoint sensor, SELinux)
 
-Stand up the island GUI on **sirius** (an **endpoint** node). Unlike polaris (the
-headless SQLite file authority — see `RUNBOOK.md`), sirius **serves the browser
-UI** and runs **no database**. Its file panel forwards to vega (the hub); its node
-identity and IDS feed are local.
+From a **fresh sirius** to a working endpoint: serves its own GUI locally, forwards
+files to the hub, and runs the **IDS host sensor** shipping sealed alerts to the
+hub. The wall is **SELinux blocking uvicorn** — solved in §3. Self-contained; the
+only off-box steps are the frontend bundle (§7) and pushing the branch.
 
-**sirius facts this runbook assumes** (correct me if wrong):
-- x86 Linux, **not** a Pi. User `brichardt`, home `/home/brichardt`. Hostname is
-  `thebigun` — but the *island* identity is set with `GUI_NODE_NAME=sirius`, so
-  the masthead and upload attribution read "sirius" regardless of hostname.
-- **Has a local desktop/browser** → you reach the UI at `http://127.0.0.1:8787/`
-  on sirius itself. No SSH tunnel needed (that was a headless-polaris thing).
-- Python 3.14 — newer than the Pi's 3.10. See the §2 wheel caveat.
-- sirius and polaris **reach each other** on the network.
+**sirius facts** (correct if wrong): x86 **Linux, SELinux enforcing**; user
+`brichardt`, hostname `thebigun` (island identity is `GUI_NODE_NAME=sirius`);
+Python 3.14 (use 3.12 — §2); has a local browser → views its UI at
+`http://127.0.0.1:8787`; wg0 `10.42.0.5`; hub = vega `10.42.0.2`.
 
-**The file authority is `vega` (the wg hub) at `10.42.0.2:8787`** — the store was
-moved off polaris (a spoke, only reachable spoke-to-spoke and flaky) onto the hub,
-which every spoke reaches directly. See `RUNBOOK-vega-migrate.md`. vega is **live**,
-so Phase B is no longer gated — it's just "point at vega."
-
-**Two phases.**
-- **Phase A (optional):** sirius runs its UI + backend in **`placeholder`** mode —
-  full upload/list/download/delete, but in-memory (gone on restart) and **not**
-  shared. Only useful to prove the frontend before wiring the store.
-- **Phase B (the real target, §7):** flip one env var to `remote` →
-  `GUI_FILES_URL=http://10.42.0.2:8787`. sirius is a spoke, vega is the hub, so
-  this path is direct and stable. No redeploy.
-
-**Safety:** the API is unauthenticated, so sirius binds **loopback-only** the
-whole time. Never bind `0.0.0.0`.
+> **Why uvicorn was blocked.** A systemd service may not `exec` files under
+> `/home` (`user_home_t`) — `(code=exited, status=203/EXEC)`. The fix is to deploy
+> under **`/opt`** (service-exec-able) and label correctly. Everything below assumes
+> `/opt`, never `/home`.
 
 ---
 
-## 1. Get the code onto sirius
-
-sirius has no repo/deploy key yet. The backend Python deploys by pull/copy; pick one.
-
-### Option A — GitHub deploy key (read-only, mirrors polaris)
-
+## 1. Code → `/opt` (NOT `/home` — this *is* the SELinux fix)
 ```bash
-# on sirius
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_github -N "" -C "sirius-deploy"
-cat ~/.ssh/id_ed25519_github.pub      # add as a READ-ONLY deploy key on the GitHub repo
-cat >> ~/.ssh/config <<'EOF'
-
-Host github.com
-  HostName github.com
-  User git
-  IdentityFile ~/.ssh/id_ed25519_github
-  IdentitiesOnly yes
-EOF
-chmod 600 ~/.ssh/config
-ssh -T git@github.com                 # expect "successfully authenticated"
-mkdir -p ~/projects && cd ~/projects
-git clone git@github.com:<owner>/vpn-pi.git
-cd vpn-pi && git checkout feat/gui-files-ids   # or main, once merged
+sudo mkdir -p /opt/vpn-pi && sudo chown -R brichardt:brichardt /opt/vpn-pi
+# clone (deploy key) OR rsync from the Mac — into /opt, not ~:
+git clone git@github.com:<owner>/vpn-pi.git /opt/vpn-pi
+#   (Mac alt) rsync -az --delete --exclude .git --exclude .venv --exclude __pycache__ \
+#             --exclude static ~/Desktop/projects/initfolder/vpn-pi/ sirius:/opt/vpn-pi/
+cd /opt/vpn-pi && git checkout feat/ids-mesh
 ```
 
-### Option B — rsync from the Mac (no GitHub access on sirius)
-
+## 2. Python 3.12 venv (in `/opt`)
 ```bash
-# (Mac) from the repo root
-rsync -az --delete \
-  --exclude .git --exclude node_modules --exclude .venv \
-  --exclude __pycache__ --exclude static \
-  ~/Desktop/projects/initfolder/vpn-pi/ sirius:~/projects/vpn-pi/
+sudo dnf install -y python3.12 policycoreutils-python-utils setroubleshoot-server
+cd /opt/vpn-pi/gui/backend
+python3.12 -m venv .venv            # py3.14 has no cp314 wheels for pynacl/pydantic-core
+./.venv/bin/pip install --upgrade pip && ./.venv/bin/pip install -r requirements.txt
+./.venv/bin/python -c "import nacl, fastapi; print('deps ok')"
 ```
 
-Confirm either way:
+## 3. SELinux — make uvicorn runnable (the core)
+### 3a. Label the deploy
 ```bash
-ls ~/projects/vpn-pi/gui/backend/app/{main.py,store.py,remote.py}
+sudo restorecon -RFv /opt/vpn-pi                       # apply /opt's default contexts
+# the venv binaries must be service-exec-able; if restorecon didn't make them bin_t:
+sudo semanage fcontext -a -t bin_t "/opt/vpn-pi/gui/backend/.venv/bin(/.*)?"
+sudo restorecon -Rv /opt/vpn-pi/gui/backend/.venv/bin
 ```
-
----
-
-## 2. Python env + dependencies
-
+### 3b. Allow the non-standard port (the app binds + the shipper connects to 8787)
 ```bash
-cd ~/projects/vpn-pi/gui/backend
-python3 -m venv .venv
-./.venv/bin/pip install --upgrade pip
-./.venv/bin/pip install -r requirements.txt
-./.venv/bin/uvicorn --version
-./.venv/bin/python -c "import multipart; print('multipart ok')"
+sudo semanage port -a -t http_port_t -p tcp 8787 || sudo semanage port -m -t http_port_t -p tcp 8787
 ```
-
-> **Python 3.14 caveat.** fastapi/pydantic/uvicorn pull compiled wheels
-> (`pydantic-core` is Rust). If pip tries to *build from source* (errors about
-> `maturin`/`cargo`/`gcc`), there's no cp314 wheel for a pinned version. Fastest
-> fix: install a 3.12 alongside and build the venv with it —
-> `python3.12 -m venv .venv` — then re-run the installs. The app itself is happy
-> on 3.12+.
-
----
-
-## 3. Ship the frontend bundle (Mac) — REQUIRED on sirius
-
-This is the step polaris skips and sirius needs (sirius serves the UI):
-
+### 3c. Install the unit (§4), start it, and clear any residual denials
+After §4's `systemctl start`, if `status` shows `203/EXEC` or the journal shows AVCs:
 ```bash
-# (Mac)
-gui/deploy/push-gui.sh sirius
-ssh sirius 'ls ~/projects/vpn-pi/gui/backend/static/index.html'   # exists -> UI served
+sudo ausearch -m AVC -ts recent | audit2why          # WHY it's denied (read this)
+# collect into a tight module from the REAL denials, REVIEW, install:
+sudo ausearch -m AVC -ts recent | audit2allow -M su495gui
+less su495gui.te         # expect ONLY: exec the venv python + bundled .so (pynacl/_sodium,
+#                          pydantic_core), name_connect tcp:8787 (shipper→hub), journal read
+sudo semodule -i su495gui.pp
+sudo systemctl restart su495-gui.service
 ```
+> To collect cleanly, flip permissive just while you exercise it: `sudo setenforce 0`
+> → start + hit it → `audit2allow` → `sudo setenforce 1`. If `audit2allow` wants
+> anything broad (`sys_admin`, a wide `execmem`), **stop** — that's a mislabel
+> `restorecon` should fix, not an `allow`.
 
-`push-gui.sh` builds (`tsc + vite`) and rsyncs `backend/static/` to sirius. The
-backend auto-serves `/` when that dir exists.
-
----
-
-## 4. First run — Phase A (placeholder, loopback, manual)
-
-```bash
-cd ~/projects/vpn-pi/gui/backend
-GUI_FILES=placeholder \
-GUI_NODE_NAME=sirius GUI_NODE_ROLE=endpoint \
-GUI_BIND=127.0.0.1 GUI_PORT=8787 \
-  ./.venv/bin/python -m app.main
-```
-
-In a second terminal on sirius, smoke-test:
-```bash
-curl -s 127.0.0.1:8787/api/node | python3 -m json.tool        # -> "name":"sirius","role":"endpoint"
-curl -s 127.0.0.1:8787/api/files | python3 -m json.tool | head # -> "root":"placeholder (in-memory ...)"
-echo "sirius smoke $(date)" > /tmp/smoke.txt
-ID=$(curl -s -F file=@/tmp/smoke.txt 127.0.0.1:8787/api/files | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
-curl -s 127.0.0.1:8787/api/files/$ID/download                 # exact bytes back
-curl -s -o /dev/null -w '%{http_code}\n' -X DELETE 127.0.0.1:8787/api/files/$ID   # 204
-curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:8787/      # 200 (404 = §3 not run)
-```
-
-Then open **`http://127.0.0.1:8787/`** in sirius's browser — masthead says
-**sirius / endpoint**, Files + IDS panels live. `Ctrl-C` to stop.
-
----
-
-## 5. Install as a service
-
-The repo's `su495-gui.service` is polaris-specific (SQLite, `billy`,
-`/var/lib/vpn-pi`). sirius needs its own unit — `brichardt`, no DB, no writable
-data dir. Write it on sirius:
-
+## 4. systemd unit (`/opt` paths; endpoint = file-forward + IDS sensor)
 ```bash
 sudo tee /etc/systemd/system/su495-gui.service >/dev/null <<'EOF'
-# SU495 island GUI — sirius (endpoint). Serves the UI; file ops are in-memory
-# (Phase A) or forwarded to vega (Phase B). No local database.
-# LOOPBACK-ONLY: the API is unauthenticated. Do not bind off-loopback until auth.
-
 [Unit]
-Description=SU495 island GUI (sirius, endpoint node)
+Description=SU495 island GUI (sirius, endpoint sensor)
 After=network-online.target
 Wants=network-online.target
 
@@ -156,113 +76,98 @@ Wants=network-online.target
 Type=simple
 User=brichardt
 Group=brichardt
-WorkingDirectory=/home/brichardt/projects/vpn-pi/gui/backend
+WorkingDirectory=/opt/vpn-pi/gui/backend
 
-# --- Phase A: placeholder (in-memory, not shared). ---
-Environment=GUI_FILES=placeholder
-# --- Phase B: comment the line above, uncomment these two (see §7). ---
-# Environment=GUI_FILES=remote
-# Environment=GUI_FILES_URL=http://10.42.0.2:8787
-
+# files: forward to the hub (no local DB)
+Environment=GUI_FILES=remote
+Environment=GUI_FILES_URL=http://10.42.0.2:8787
+# IDS: local host sensor, ship sealed alerts to the hub
+Environment=GUI_IDS=host
 Environment=GUI_NODE_NAME=sirius
 Environment=GUI_NODE_ROLE=endpoint
+Environment=GUI_IDS_NODE_KEY=/var/lib/vpn-pi/ids/node.key
+Environment=GUI_IDS_MASTER_PUBKEY=/var/lib/vpn-pi/ids/master.pub
+Environment=GUI_IDS_RELAY_URL=http://10.42.0.2:8787
+Environment=GUI_IDS_NODE_ADDR=10.42.0.5
 Environment=GUI_PORT=8787
 
-ExecStart=/home/brichardt/projects/vpn-pi/gui/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8787
+# LOOPBACK-only (sirius has a local browser; the shipper still reaches the hub outbound)
+ExecStart=/opt/vpn-pi/gui/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8787
 Restart=on-failure
 RestartSec=2
 
-# Hardening — sirius runs no DB, so nothing outside the read-only system is writable.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
+ReadWritePaths=/var/lib/vpn-pi          # IDS keydir + shipper state
 PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
 EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now su495-gui.service
-systemctl status su495-gui.service
-journalctl -u su495-gui.service -n 30 --no-pager
-curl -s 127.0.0.1:8787/api/health     # {"status":"ok"}
+sudo systemctl daemon-reload && sudo systemctl enable --now su495-gui.service
+systemctl status su495-gui.service --no-pager     # active, NO 203/EXEC
 ```
 
-> "Active" ≠ "working" — re-run the §4 upload/download/delete checks against the
-> running service before calling it done. Then load `http://127.0.0.1:8787/`.
-
----
-
-## 6. (Optional) reach sirius's UI from the Mac
-
-Only if you want to view it off-sirius while loopback-only — forward over SSH
-(the API stays unexposed):
+## 5. Sensor prerequisites
 ```bash
-# (Mac)
-ssh -N -L 8787:127.0.0.1:8787 sirius   # then http://127.0.0.1:8787/ on the Mac
+sudo usermod -aG systemd-journal brichardt        # IDS + fail2ban read the journal
+# fail2ban must log to the JOURNAL (else bans never reach the GUI):
+printf '[Definition]\nlogtarget = SYSTEMD-JOURNAL\n' | sudo tee /etc/fail2ban/fail2ban.local >/dev/null
+sudo systemctl restart fail2ban
+# keys (you generate): node key here; copy polaris's master.pub; register sirius's verify key on polaris
+sudo mkdir -p /var/lib/vpn-pi/ids && sudo chown brichardt:brichardt /var/lib/vpn-pi/ids
+cd /opt/vpn-pi/gui/backend && ./.venv/bin/python ../deploy/ids-keygen.py node --out /var/lib/vpn-pi/ids
+#   -> on polaris registry: 10.42.0.5=<sirius verify key>
+sudo systemctl restart su495-gui.service          # pick up the journal group + keys
 ```
-If sirius's own browser is enough, skip this.
 
----
-
-## 7. Phase B — flip sirius to vega's shared store (the target)
-
-vega (the hub) is **live** at `10.42.0.2:8787` and reachable by every spoke, so
-this is no longer gated — just point sirius at it. (The API is still
-unauthenticated; vega's firewall scopes 8787 to the wg subnet, which is the
-current access control — see `NFTABLES-gui-port.md`.)
-
-On sirius:
+## 6. wg + reachability
 ```bash
-sudo systemctl edit --full su495-gui.service
-#   comment:   Environment=GUI_FILES=placeholder
-#   uncomment: Environment=GUI_FILES=remote
-#              Environment=GUI_FILES_URL=http://10.42.0.2:8787
-sudo systemctl restart su495-gui.service
-
-curl -s 127.0.0.1:8787/api/files | python3 -m json.tool | head   # -> "root":"vega:island.db"
-# upload here, then confirm it shows up directly on vega:  curl http://10.42.0.2:8787/api/files
+sudo wg show wg0 ; ping -c2 10.42.0.2 ; curl -s --max-time5 10.42.0.2:8787/api/health
 ```
-If `/api/files` hangs ~5s then errors, sirius can't reach vega — check the wg path
-(`ping 10.42.0.2`) and vega's firewall rule.
-(`remote.py` has a 5s timeout so a dead vega won't freeze sirius's UI.)
+Down? `sudo wg-quick up wg0`; persist: `sudo systemctl enable --now wg-quick@wg0`.
 
----
-
-## 8. Upgrades
-
+## 7. Frontend bundle (Mac → sirius's `/opt`)
+sirius serves its own UI, so it needs the bundle — **at the `/opt` path** (push-gui.sh
+targets `~`, so rsync it to `/opt` instead):
 ```bash
-# Option A: cd ~/projects/vpn-pi && git pull
-# Option B: re-run the Mac rsync from §1B
-cd ~/projects/vpn-pi/gui/backend && ./.venv/bin/pip install -r requirements.txt  # if deps changed
-sudo systemctl restart su495-gui.service
-# (Mac) re-ship UI if it changed:  gui/deploy/push-gui.sh sirius
+# (Mac) build, then ship to /opt:
+( cd gui/frontend && npm run build )
+rsync -az gui/backend/static/ sirius:/tmp/static/
+ssh sirius 'sudo rsync -a --delete /tmp/static/ /opt/vpn-pi/gui/backend/static/ && \
+            sudo restorecon -Rv /opt/vpn-pi/gui/backend/static && \
+            sudo systemctl restart su495-gui.service'
 ```
-sirius holds no durable state — nothing to back up here (polaris owns the data).
 
----
-
-## 9. Rollback / uninstall
-
+## 8. Verify
 ```bash
-sudo systemctl disable --now su495-gui.service
-sudo rm /etc/systemd/system/su495-gui.service
-sudo systemctl daemon-reload
+# on sirius
+curl -s 127.0.0.1:8787/api/health                     # {"status":"ok"}
+curl -s 127.0.0.1:8787/api/ids | python3 -m json.tool # sirius's own events
+curl -s 127.0.0.1:8787/api/files | python3 -m json.tool | head   # root "vega:island.db" (forwarded)
+# browser: http://127.0.0.1:8787  -> masthead "sirius / endpoint", Files + IDS + JAILS
+# sensor ships to the master:
+sudo fail2ban-client set sshd banip 203.0.113.99      # TEST-NET; not your own ip
+#   on polaris: the CRIT ban appears attributed to 10.42.0.5
+sudo fail2ban-client set sshd unbanip 203.0.113.99
 ```
 
----
+## 9. Troubleshooting (SELinux-first)
+| Symptom | Cause → fix |
+|---|---|
+| `status=203/EXEC` | app under `/home`, or venv not `bin_t` → deploy `/opt` (§1) + `restorecon`/`fcontext` (§3a) |
+| starts, then AVC in journal | residual denial → `ausearch -m AVC \| audit2why`; `audit2allow -M` + `semodule -i` (§3c) |
+| binds but shipper can't reach hub | `name_connect` to 8787 denied → §3b port label + §3c; or wg down (§6) |
+| `/` 404s, `/api/*` works | bundle not at `/opt/…/static` → §7 |
+| no IDS events at all | `brichardt` not in `systemd-journal`, or no restart after `usermod` → §5 |
+| bans missing but `fail2ban-client status` shows them | fail2ban logging to a file → `logtarget = SYSTEMD-JOURNAL` (§5) |
+| `pip` compiles pydantic-core / cargo error | no cp314 wheel → 3.12 venv (§2) |
 
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `pip install` tries to compile pydantic-core / errors on cargo | no cp314 wheel | rebuild venv with `python3.12 -m venv .venv`, reinstall (§2) |
-| `/` 404s, `/api/*` works | static bundle not shipped | re-run §3 `push-gui.sh sirius` |
-| masthead says "polaris" not "sirius" | `GUI_NODE_NAME` unset | set it in the unit; `systemctl show su495-gui -p Environment` |
-| root says `placeholder (in-memory)` when you wanted sharing | still Phase A | correct until §7 preconditions met |
-| `/api/files` hangs ~5s then errors (Phase B) | can't reach polaris | recheck §7 preconditions 1–2 |
-| service won't start: `GUI_FILES=remote requires GUI_FILES_URL` | remote without URL | set `GUI_FILES_URL`, or revert to `placeholder` |
-| 500 on upload, `ModuleNotFoundError: multipart` | venv deps missing | re-run §2 |
-| `git clone/pull` asks for a password | no deploy key | finish §1A, or use §1B rsync |
-</content>
+## 10. Upgrades / uninstall
+```bash
+cd /opt/vpn-pi && git pull && cd gui/backend && ./.venv/bin/pip install -r requirements.txt
+sudo restorecon -Rv /opt/vpn-pi && sudo systemctl restart su495-gui.service   # relabel after pull
+# uninstall: sudo systemctl disable --now su495-gui.service ; sudo semodule -r su495gui ;
+#            sudo semanage port -d -t http_port_t -p tcp 8787
+```
