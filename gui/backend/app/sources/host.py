@@ -22,27 +22,25 @@ unit-testable with canned journald JSON and no live journal.
 
 from __future__ import annotations
 
-import json
 import os
 import re
-import subprocess
-import threading
-import time
 from datetime import datetime, timezone
 from typing import Callable
 
 from app.models import IdsEvent, IdsSeverity, IdsSource, NodeIdentity
+from app.sources import journal
+from app.sources.cache import TTLCache
 
 # How far back each query looks, and a hard cap per query so a chatty journal
 # can't blow up a single /api/ids call. Both overridable for tuning.
 _SINCE = os.environ.get("GUI_IDS_SINCE", "-24h")
 _PER_SENSOR_LIMIT = int(os.environ.get("GUI_IDS_PER_SENSOR_LIMIT", "200"))
-_TIMEOUT_S = 10
 # Cache a full ids() result this long so the 2s UI poll doesn't 1:1 map to a
 # storm of journalctl spawns (the journal window is hours — staleness is moot).
 _IDS_TTL = float(os.environ.get("GUI_IDS_CACHE_TTL", "3"))
 
-# Runs `journalctl --no-pager <args...>` and returns stdout. Injectable for tests.
+# Runs `journalctl --no-pager <args...>` and returns stdout. Injectable for tests;
+# defaults to the shared journal.run (app/sources/journal.py).
 JournalRunner = Callable[[list[str]], str]
 
 # A real fail2ban ban is "Ban <ip>" — anchored on a following IP so it can't
@@ -51,33 +49,6 @@ _BAN_RE = re.compile(r"\bBan\s+((?:\d{1,3}\.){3}\d{1,3})")
 _LOGIN_RE = re.compile(r"for (?:invalid user )?(\S+) from (\S+)")  # also matches "Failed password for…"
 _USB_RE = re.compile(r"usb-storage\s+([\w\-:.]+)")
 _JAIL_RE = re.compile(r"\[([\w-]+)\]")  # the fail2ban jail, e.g. [sshd]
-
-
-def _default_runner(args: list[str]) -> str:
-    """Invoke journalctl; return stdout, or "" on any failure. The feed must
-    degrade, never crash the API."""
-    try:
-        proc = subprocess.run(
-            ["journalctl", "--no-pager", *args],
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT_S,
-        )
-    except (FileNotFoundError, OSError, subprocess.SubprocessError):
-        return ""
-    return proc.stdout if proc.returncode == 0 else ""
-
-
-def _message(rec: dict) -> str:
-    """journald MESSAGE is usually a str, but binary messages arrive as a list
-    of byte values — coerce both to text."""
-    m = rec.get("MESSAGE")
-    if isinstance(m, list):
-        try:
-            return bytes(m).decode("utf-8", "replace")
-        except (ValueError, TypeError):
-            return ""
-    return m or ""
 
 
 def _at(rec: dict) -> datetime | None:
@@ -95,7 +66,7 @@ def _event(
     """Build one IdsEvent from a journald record, or None if it lacks a usable
     timestamp/message."""
     at = _at(rec)
-    msg = _message(rec)
+    msg = journal.message(rec)
     if at is None or not msg:
         return None
     ident = rec.get("SYSLOG_IDENTIFIER") or rec.get("_COMM") or source.value
@@ -118,7 +89,7 @@ class HostDataSource:
     """
 
     def __init__(self, runner: JournalRunner | None = None) -> None:
-        self._run = runner or _default_runner
+        self._run = runner or journal.run
         self._self = NodeIdentity(
             name=os.environ.get("GUI_NODE_NAME", "polaris"),
             role=os.environ.get("GUI_NODE_ROLE", "relay"),
@@ -134,60 +105,45 @@ class HostDataSource:
             or os.environ.get("GUI_BIND")
             or self._self.name
         )
-        self._lock = threading.Lock()
-        self._ids_cache: tuple[float, list[IdsEvent]] | None = None
+        self._cache: TTLCache[list[IdsEvent]] = TTLCache(_IDS_TTL)
         self._jcache: dict[tuple[str, ...], list[dict]] = {}  # per-compute journal memo
 
     def node(self) -> NodeIdentity:
         return self._self
 
     def ids(self, limit: int = 100) -> list[IdsEvent]:
-        with self._lock:
-            now = time.monotonic()
-            if self._ids_cache is not None and now - self._ids_cache[0] < _IDS_TTL:
-                return self._ids_cache[1][:limit]
-            self._jcache = {}  # fresh per-compute journal memo
-            failed = self._failed_auths()  # ip -> aggregated failed-ssh-auth buildup
-            events: list[IdsEvent] = []
-            events += self._auth_events(failed)        # bans (CRIT), enriched with count
-            events += self._bruteforce_events(failed)  # attempts (WARN), one per IP
-            events += self._login_events()
-            events += self._usb_events()
-            events += self._reboot_events()
-            for e in events:
-                e.node = self._self_node  # this node's own events carry its identity
-            events.sort(key=lambda e: e.at, reverse=True)
-            self._ids_cache = (time.monotonic(), events)  # stamp at completion
-            return events[:limit]
+        return self._cache.get_or_compute(self._compute)[:limit]
+
+    def _compute(self) -> list[IdsEvent]:
+        self._jcache = {}  # fresh per-compute journal memo
+        failed = self._failed_auths()  # ip -> aggregated failed-ssh-auth buildup
+        events: list[IdsEvent] = []
+        events += self._auth_events(failed)        # bans (CRIT), enriched with count
+        events += self._bruteforce_events(failed)  # attempts (WARN), one per IP
+        events += self._login_events()
+        events += self._usb_events()
+        events += self._reboot_events()
+        for e in events:
+            e.node = self._self_node  # this node's own events carry its identity
+        events.sort(key=lambda e: e.at, reverse=True)
+        return events
 
     # --- one journalctl query per sensor; memoized per compute so the two sshd
     #     and the two -k callers don't each re-spawn journalctl. [] on read failure. ---
 
     def _json(self, selector: list[str]) -> list[dict]:
-        """Run a JSON query (standard window + cap + selector) and parse the
-        json-lines output into records, skipping anything unparseable."""
+        """Run a JSON query (window + cap + selector); memoized per compute."""
         key = tuple(selector)
-        if key in self._jcache:
-            return self._jcache[key]
-        out = self._run(
-            ["-o", "json", "--since", _SINCE, "-n", str(_PER_SENSOR_LIMIT), *selector]
-        )
-        recs: list[dict] = []
-        for line in out.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                recs.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        self._jcache[key] = recs
-        return recs
+        if key not in self._jcache:
+            self._jcache[key] = journal.parse(
+                self._run(["-o", "json", "--since", _SINCE, "-n", str(_PER_SENSOR_LIMIT), *selector])
+            )
+        return self._jcache[key]
 
     def _auth_events(self, failed: dict[str, dict]) -> list[IdsEvent]:
         out: list[IdsEvent] = []
         for rec in self._json(["-u", "fail2ban"]):
-            msg = _message(rec)
+            msg = journal.message(rec)
             m = _BAN_RE.search(msg)  # real "Ban <ip>" only — skips lifecycle lines
             if not m:
                 continue
@@ -211,7 +167,7 @@ class HostDataSource:
         not one-per-attempt)."""
         agg: dict[str, dict] = {}
         for rec in self._json(["_COMM=sshd", "_COMM=sshd-session"]):
-            msg = _message(rec)
+            msg = journal.message(rec)
             if "Failed password" not in msg:
                 continue
             m = _LOGIN_RE.search(msg)
@@ -247,7 +203,7 @@ class HostDataSource:
         out: list[IdsEvent] = []
         # OpenSSH >= 9.6 logs accepted auths from sshd-session, not sshd; match both.
         for rec in self._json(["_COMM=sshd", "_COMM=sshd-session"]):
-            msg = _message(rec)
+            msg = journal.message(rec)
             if "Accepted " not in msg:  # successes only; "Failed password ..." is fail2ban's job
                 continue
             m = _LOGIN_RE.search(msg)
@@ -261,7 +217,7 @@ class HostDataSource:
     def _usb_events(self) -> list[IdsEvent]:
         out: list[IdsEvent] = []
         for rec in self._json(["-k"]):
-            msg = _message(rec)
+            msg = journal.message(rec)
             if "usb-storage" not in msg and "USB Mass Storage" not in msg:
                 continue
             m = _USB_RE.search(msg)
@@ -278,7 +234,7 @@ class HostDataSource:
         # crash) needs prior-shutdown analysis and is deliberately future work.
         out: list[IdsEvent] = []
         for rec in self._json(["-k"]):
-            msg = _message(rec)
+            msg = journal.message(rec)
             if not msg.startswith("Linux version"):
                 continue
             ev = _event(rec, IdsSource.REBOOT, IdsSeverity.WARN, "system")

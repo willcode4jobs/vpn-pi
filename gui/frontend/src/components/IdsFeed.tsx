@@ -2,6 +2,7 @@ import { Fragment, useState } from "react";
 import type { Poll } from "../api";
 import { clock } from "../format";
 import type { IdsEvent, IdsSeverity } from "../types";
+import { Readout } from "./Readout";
 
 // Severity drives color: info=green, warn=orange, crit=red — on white text over
 // warm black. The feed shows the 5 newest by default; SHOW ALL reveals the rest
@@ -22,7 +23,6 @@ export function IdsFeed({ poll }: { poll: Poll<IdsEvent[]> }) {
 
   const crit = events?.filter((e) => e.severity === "crit").length ?? 0;
   const warn = events?.filter((e) => e.severity === "warn").length ?? 0;
-  const shown = events ? (showAll ? events : events.slice(0, COLLAPSED)) : [];
 
   return (
     <section className="panel" aria-label="ids feed">
@@ -40,12 +40,11 @@ export function IdsFeed({ poll }: { poll: Poll<IdsEvent[]> }) {
         </div>
       </div>
 
-      {events === null ? (
-        <div className="empty">awaiting first read…</div>
-      ) : events.length === 0 ? (
-        <div className="empty">no events</div>
-      ) : (
-        <>
+      <Readout poll={poll} empty="no events">
+        {(rows) => {
+          const shown = showAll ? rows : rows.slice(0, COLLAPSED);
+          return (
+            <>
           <div className={showAll ? "feed feed-scroll" : "feed"}>
             <table className="readout ids">
               <thead>
@@ -97,17 +96,19 @@ export function IdsFeed({ poll }: { poll: Poll<IdsEvent[]> }) {
             </table>
           </div>
 
-          {events.length > COLLAPSED && (
+          {rows.length > COLLAPSED && (
             <button
               className="feed-more"
               onClick={() => setShowAll((v) => !v)}
               aria-expanded={showAll}
             >
-              {showAll ? "▴ SHOW LESS" : `▾ SHOW ALL (${events.length})`}
+              {showAll ? "▴ SHOW LESS" : `▾ SHOW ALL (${rows.length})`}
             </button>
           )}
-        </>
-      )}
+            </>
+          );
+        }}
+      </Readout>
     </section>
   );
 }
