@@ -19,16 +19,21 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 
-from app.models import FilesSnapshot, IdsEvent, NodeIdentity, SharedFile
+from app.models import FilesSnapshot, IdsEvent, JailStatus, NodeIdentity, SharedFile
 from app.peers import resolve as resolve_peer
 from app.relay import RelayBatch, RelayDeposit, build_relay
 from app.sources import DataSource, build_data_source
+from app.sources.fail2ban import build_fail2ban_source
 from app.store import FileNotFound, build_store
 from app.viewauth import LoginRequest, check_password, issue_token, require_view
 
 # IDS/identity source: mock (default) | host (real journald) | mesh (Step 4).
 # Selected by GUI_IDS — see app/sources/factory.py.
 SOURCE: DataSource = build_data_source()
+
+# Live fail2ban jail status (current bans). Degrades to [] where fail2ban /
+# the sudoers grant isn't present — see app/sources/fail2ban.py.
+JAILS = build_fail2ban_source()
 
 
 def require_peer(request: Request) -> str:
@@ -152,6 +157,14 @@ def get_ids(
 ) -> list[IdsEvent]:
     """Host-security (IDS) feed, most-recent-first. Polled by the IDS panel."""
     return SOURCE.ids(limit=limit)
+
+
+@app.get("/api/jails", response_model=list[JailStatus])
+def get_jails(
+    _peer: str = Depends(require_peer), _view: None = Depends(require_view)
+) -> list[JailStatus]:
+    """Live fail2ban jail status (current bans). Polled by the JAILS panel."""
+    return JAILS.jails()
 
 
 # --- IDS blind relay (hub only). Opaque ciphertext in, opaque ciphertext out. ---

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FilesSnapshot, IdsEvent, NodeIdentity, SharedFile } from "./types";
+import type { FilesSnapshot, IdsEvent, JailStatus, NodeIdentity, SharedFile } from "./types";
 
 // Result of a polled endpoint. `stale` true once a fetch has failed since the
 // last success — the silent-node signal the screen is built around: when the
@@ -109,6 +109,9 @@ export const useFiles = (intervalMs = 2000) =>
 
 export const useIds = (intervalMs = 2000) =>
   usePoll<IdsEvent[]>("/api/ids", intervalMs);
+
+export const useJails = (intervalMs = 2000) =>
+  usePoll<JailStatus[]>("/api/jails", intervalMs);
 
 // --- File-share mutations (the polaris SQLite store) ---
 

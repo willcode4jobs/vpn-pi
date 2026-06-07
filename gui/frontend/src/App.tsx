@@ -1,6 +1,7 @@
-import { useFiles, useIds, useNode } from "./api";
+import { useFiles, useIds, useJails, useNode } from "./api";
 import { Files } from "./components/Files";
 import { IdsFeed } from "./components/IdsFeed";
+import { JailsPanel } from "./components/JailsPanel";
 import { LoginGate } from "./components/LoginGate";
 import { StatusBar } from "./components/StatusBar";
 
@@ -11,6 +12,7 @@ export default function App() {
   const node = useNode();
   const files = useFiles();
   const ids = useIds();
+  const jails = useJails();
 
   // On the master the polled reads are view-password gated; a 401 surfaces here.
   if (node.authRequired || ids.authRequired) {
@@ -20,6 +22,7 @@ export default function App() {
           node.refetch();
           ids.refetch();
           files.refetch();
+          jails.refetch();
         }}
       />
     );
@@ -40,6 +43,7 @@ export default function App() {
 
       <main className="grid">
         <Files poll={files} refetch={files.refetch} />
+        <JailsPanel poll={jails} />
         <IdsFeed poll={ids} />
       </main>
 

@@ -32,3 +32,10 @@ export interface IdsEvent {
   subject: string;
   message: string;
 }
+
+export interface JailStatus {
+  jail: string; // e.g. "sshd"
+  currently_banned: number;
+  total_banned: number;
+  banned_ips: string[];
+}

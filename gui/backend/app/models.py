@@ -77,3 +77,13 @@ class IdsEvent(BaseModel):
     severity: IdsSeverity
     subject: str  # the device/user/ip the event is about
     message: str  # human-readable, already rendered
+
+
+class JailStatus(BaseModel):
+    """Live state of one fail2ban jail — who is locked out right now (from
+    `fail2ban-client status <jail>`). Polled by the JAILS panel."""
+
+    jail: str  # e.g. "sshd"
+    currently_banned: int
+    total_banned: int
+    banned_ips: list[str]
