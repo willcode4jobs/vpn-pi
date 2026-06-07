@@ -59,6 +59,14 @@ class TestViewAuthActive(unittest.TestCase):
     def test_tokens_are_distinct(self) -> None:
         self.assertNotEqual(va.issue_token(), va.issue_token())
 
+    def test_expired_token_rejected_and_evicted(self) -> None:
+        token = va.issue_token()
+        va._TOKENS[token] = 0.0  # force-expire (epoch 0, long past)
+        with self.assertRaises(HTTPException) as cm:
+            va.require_view(_req(f"Bearer {token}"))
+        self.assertEqual(cm.exception.status_code, 401)
+        self.assertNotIn(token, va._TOKENS)  # evicted on the failed check
+
 
 if __name__ == "__main__":
     unittest.main()

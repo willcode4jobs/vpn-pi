@@ -13,6 +13,9 @@ export function JailsPanel({ poll }: { poll: Poll<JailStatus[]> }) {
       <div className="panel-head">
         <h2>JAILS</h2>
         <div className="tally">
+          {/* fail2ban state is per-node (not mesh-aggregated like the IDS feed) —
+              label the scope so it doesn't read as contradicting the feed. */}
+          <span className="dim">this node</span>
           {jails &&
             (banned > 0 ? (
               <span className="chip chip-crit">{banned} BANNED</span>

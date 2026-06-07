@@ -26,6 +26,8 @@ import json
 import os
 import re
 import subprocess
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -36,6 +38,9 @@ from app.models import IdsEvent, IdsSeverity, IdsSource, NodeIdentity
 _SINCE = os.environ.get("GUI_IDS_SINCE", "-24h")
 _PER_SENSOR_LIMIT = int(os.environ.get("GUI_IDS_PER_SENSOR_LIMIT", "200"))
 _TIMEOUT_S = 10
+# Cache a full ids() result this long so the 2s UI poll doesn't 1:1 map to a
+# storm of journalctl spawns (the journal window is hours — staleness is moot).
+_IDS_TTL = float(os.environ.get("GUI_IDS_CACHE_TTL", "3"))
 
 # Runs `journalctl --no-pager <args...>` and returns stdout. Injectable for tests.
 JournalRunner = Callable[[list[str]], str]
@@ -129,28 +134,41 @@ class HostDataSource:
             or os.environ.get("GUI_BIND")
             or self._self.name
         )
+        self._lock = threading.Lock()
+        self._ids_cache: tuple[float, list[IdsEvent]] | None = None
+        self._jcache: dict[tuple[str, ...], list[dict]] = {}  # per-compute journal memo
 
     def node(self) -> NodeIdentity:
         return self._self
 
     def ids(self, limit: int = 100) -> list[IdsEvent]:
-        failed = self._failed_auths()  # ip -> aggregated failed-ssh-auth buildup
-        events: list[IdsEvent] = []
-        events += self._auth_events(failed)       # bans (CRIT), enriched with count
-        events += self._bruteforce_events(failed)  # attempts (WARN), one per IP
-        events += self._login_events()
-        events += self._usb_events()
-        events += self._reboot_events()
-        for e in events:
-            e.node = self._self_node  # this node's own events carry its identity
-        events.sort(key=lambda e: e.at, reverse=True)
-        return events[:limit]
+        with self._lock:
+            now = time.monotonic()
+            if self._ids_cache is not None and now - self._ids_cache[0] < _IDS_TTL:
+                return self._ids_cache[1][:limit]
+            self._jcache = {}  # fresh per-compute journal memo
+            failed = self._failed_auths()  # ip -> aggregated failed-ssh-auth buildup
+            events: list[IdsEvent] = []
+            events += self._auth_events(failed)        # bans (CRIT), enriched with count
+            events += self._bruteforce_events(failed)  # attempts (WARN), one per IP
+            events += self._login_events()
+            events += self._usb_events()
+            events += self._reboot_events()
+            for e in events:
+                e.node = self._self_node  # this node's own events carry its identity
+            events.sort(key=lambda e: e.at, reverse=True)
+            self._ids_cache = (time.monotonic(), events)  # stamp at completion
+            return events[:limit]
 
-    # --- one journalctl query per sensor; each degrades to [] on read failure ---
+    # --- one journalctl query per sensor; memoized per compute so the two sshd
+    #     and the two -k callers don't each re-spawn journalctl. [] on read failure. ---
 
     def _json(self, selector: list[str]) -> list[dict]:
         """Run a JSON query (standard window + cap + selector) and parse the
         json-lines output into records, skipping anything unparseable."""
+        key = tuple(selector)
+        if key in self._jcache:
+            return self._jcache[key]
         out = self._run(
             ["-o", "json", "--since", _SINCE, "-n", str(_PER_SENSOR_LIMIT), *selector]
         )
@@ -163,6 +181,7 @@ class HostDataSource:
                 recs.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
+        self._jcache[key] = recs
         return recs
 
     def _auth_events(self, failed: dict[str, dict]) -> list[IdsEvent]:
@@ -215,6 +234,9 @@ class HostDataSource:
         for ip, info in failed.items():
             ev = _event(info["rec"], IdsSource.AUTH, IdsSeverity.WARN, ip)
             if ev:
+                # STABLE id keyed on the IP (not the latest attempt's cursor), so
+                # a new attempt doesn't mint a "new" event that the shipper re-sends.
+                ev.id = f"bruteforce-{ip}"
                 ev.message = (
                     f"sshd: {info['count']} failed ssh auths from {ip} (user {info['user']})"
                 )

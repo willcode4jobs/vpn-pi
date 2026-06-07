@@ -66,9 +66,14 @@ function usePoll<T>(url: string, intervalMs: number): Poll<T> & { refetch: () =>
   const lastOk = useRef<Date | null>(null);
   const alive = useRef(true);
   const ctrl = useRef<AbortController | null>(null);
+  const inflight = useRef(false);
 
   const tick = useCallback(async () => {
-    ctrl.current?.abort();
+    // Skip if a request is still running — don't abort a healthy-but-slow read
+    // (e.g. the master's mesh pull). Aborting it every 2s left lastOk frozen and
+    // the masthead stuck on SIGNAL LOST even though the backend was fine.
+    if (inflight.current) return;
+    inflight.current = true;
     const c = new AbortController();
     ctrl.current = c;
     try {
@@ -84,6 +89,8 @@ function usePoll<T>(url: string, intervalMs: number): Poll<T> & { refetch: () =>
         authRequired: e instanceof AuthRequiredError,
         error: e instanceof Error ? e.message : String(e),
       }));
+    } finally {
+      inflight.current = false;
     }
   }, [url]);
 

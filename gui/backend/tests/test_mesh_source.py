@@ -104,6 +104,20 @@ class TestMeshSource(unittest.TestCase):
         spoof = RelayDeposit(node="10.42.0.4", seq=1, ct=good.ct)
         self.assertEqual(self._mesh([spoof]).ids(), [])
 
+    def test_event_cache_is_bounded(self) -> None:
+        # the master must not accumulate every event ever pulled (memory bound)
+        import app.sources.mesh as meshmod
+
+        orig = meshmod._MESH_CAP
+        meshmod._MESH_CAP = 3
+        try:
+            blobs = [self._blob(i, _ev(f"e{i}", i, "x")) for i in range(1, 7)]  # 6 distinct seqs
+            mesh = self._mesh(blobs)
+            mesh.ids()
+            self.assertLessEqual(len(mesh._events), 3)
+        finally:
+            meshmod._MESH_CAP = orig
+
 
 if __name__ == "__main__":
     unittest.main()

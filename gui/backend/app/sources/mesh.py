@@ -25,12 +25,16 @@ import base64
 import os
 import threading
 import urllib.request
+from collections import OrderedDict
+from datetime import datetime, timezone
 
 from app.ids_crypto import VerificationError, load_master_private, open_verify
 from app.models import IdsEvent, NodeIdentity
 from app.relay import RelayBatch
 
 _TIMEOUT = 5.0  # a dead hub must not hang the master's UI
+_MESH_CAP = 3000  # max decrypted events held in memory (oldest evicted) — bounded like the relay
+_MIN_AT = datetime.min.replace(tzinfo=timezone.utc)  # sort fallback for a missing/odd timestamp
 
 
 class MeshDataSource:
@@ -51,7 +55,9 @@ class MeshDataSource:
         self._local = local
         self._pull = puller or self._http_pull
         self._cursor = 0
-        self._events: dict[tuple[str, int], IdsEvent] = {}  # (node, seq) -> event
+        # (node, seq) -> event, insertion-ordered + capped so a long-running
+        # master doesn't accumulate every event ever pulled.
+        self._events: "OrderedDict[tuple[str, int], IdsEvent]" = OrderedDict()
         self._rejected = 0
         self._lock = threading.Lock()
 
@@ -70,7 +76,8 @@ class MeshDataSource:
             mesh_events = list(self._events.values())
         local_events = self._local.ids(limit) if self._local is not None else []
         events = mesh_events + local_events
-        events.sort(key=lambda e: e.at, reverse=True)
+        # defensive: a missing/naive timestamp from any node must not 500 the feed
+        events.sort(key=lambda e: e.at or _MIN_AT, reverse=True)
         return events[:limit]
 
     def _pull_and_merge(self) -> None:
@@ -82,8 +89,11 @@ class MeshDataSource:
             ev = self._open(blob)
             if ev is None:
                 continue
-            key = (ev.node, _seq_of(ev))
-            self._events.setdefault(key, ev)  # dedupe: first wins
+            key = (blob.node, blob.seq)  # authenticated routing fields (cross-checked)
+            if key not in self._events:
+                self._events[key] = ev  # dedupe: first wins
+                if len(self._events) > _MESH_CAP:
+                    self._events.popitem(last=False)  # evict oldest
         self._cursor = batch.cursor
 
     def _open(self, blob) -> IdsEvent | None:
@@ -103,22 +113,17 @@ class MeshDataSource:
         except (KeyError, ValueError):
             self._rejected += 1
             return None
-        # attribution from the VERIFIED identity, and carry seq for dedupe
-        return ev.model_copy(update={"node": payload["node"], "id": f"{payload['node']}:{payload['seq']}"})
+        # attribution from the VERIFIED identity; normalize a naive timestamp to UTC
+        at = ev.at
+        if at is not None and at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        return ev.model_copy(update={"node": payload["node"], "at": at})
 
     def _http_pull(self, since: int) -> RelayBatch:
         url = f"{self._relay_url}/api/ids/relay?since={since}&limit=500"
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
             return RelayBatch.model_validate_json(r.read())
-
-
-def _seq_of(ev: IdsEvent) -> int:
-    # id was set to "<node>:<seq>" on open; recover seq for the dedupe key
-    try:
-        return int(ev.id.rsplit(":", 1)[-1])
-    except (ValueError, AttributeError):
-        return -1
 
 
 def build_mesh_source() -> MeshDataSource:

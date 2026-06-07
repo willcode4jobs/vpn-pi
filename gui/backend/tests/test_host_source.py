@@ -101,6 +101,8 @@ class TestHostSource(unittest.TestCase):
         self.assertEqual(set(by_ip), {"203.0.113.77", "10.0.0.9"})  # one per IP, not per attempt
         self.assertIn("2 failed", by_ip["203.0.113.77"].message)
         self.assertIn("1 failed", by_ip["10.0.0.9"].message)
+        # STABLE id (keyed on IP) so a new attempt doesn't re-ship a "new" event
+        self.assertEqual(by_ip["10.0.0.9"].id, "bruteforce-10.0.0.9")
 
     def test_login_is_info_with_user_at_host_subject(self) -> None:
         login = [e for e in self.src.ids() if e.source is IdsSource.LOGIN]

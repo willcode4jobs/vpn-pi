@@ -25,12 +25,16 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
 
 from fastapi import HTTPException, Request
 from pydantic import BaseModel
 
-# Issued session tokens (this process). High-entropy random; cleared on restart.
-_TOKENS: set[str] = set()
+# Issued session tokens (this process) -> expiry epoch. High-entropy random;
+# expire after a TTL and are pruned on issue, so the map stays bounded and a
+# leaked token isn't valid forever.
+_TOKENS: dict[str, float] = {}
+_TTL_S = int(os.environ.get("GUI_VIEW_TTL", str(12 * 3600)))
 
 
 class LoginRequest(BaseModel):
@@ -53,8 +57,11 @@ def check_password(pw: str) -> bool:
 
 
 def issue_token() -> str:
+    now = time.time()
+    for t in [t for t, exp in _TOKENS.items() if exp <= now]:  # prune expired
+        del _TOKENS[t]
     token = secrets.token_urlsafe(32)
-    _TOKENS.add(token)
+    _TOKENS[token] = now + _TTL_S
     return token
 
 
@@ -71,5 +78,8 @@ def require_view(request: Request) -> None:
     if _password() is None:
         return
     token = _bearer(request)
-    if token is None or token not in _TOKENS:
+    exp = _TOKENS.get(token) if token else None
+    if exp is None or exp <= time.time():
+        if token in _TOKENS:  # expired — evict
+            del _TOKENS[token]
         raise HTTPException(status_code=401, detail="view password required")

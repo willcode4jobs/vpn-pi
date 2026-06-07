@@ -15,7 +15,7 @@ export default function App() {
   const jails = useJails();
 
   // On the master the polled reads are view-password gated; a 401 surfaces here.
-  if (node.authRequired || ids.authRequired) {
+  if (node.authRequired || ids.authRequired || jails.authRequired) {
     return (
       <LoginGate
         onAuthed={() => {
@@ -48,7 +48,7 @@ export default function App() {
       </main>
 
       <footer className="footer">
-        <span className="dim">su495 island · v0.2 skeleton · mock data source</span>
+        <span className="dim">su495 island · IDS mesh</span>
         <span className="dim">admin — pending</span>
       </footer>
     </div>
