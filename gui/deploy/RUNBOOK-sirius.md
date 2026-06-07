@@ -93,10 +93,19 @@ less su495gui.te         # expect ONLY: exec the venv python + bundled .so (pyna
 sudo semodule -i su495gui.pp
 sudo systemctl restart su495-gui.service
 ```
-> To collect cleanly, flip permissive just while you exercise it: `sudo setenforce 0`
-> → start + hit it → `audit2allow` → `sudo setenforce 1`. If `audit2allow` wants
-> anything broad (`sys_admin`, a wide `execmem`), **stop** — that's a mislabel
-> `restorecon` should fix, not an `allow`.
+> Denials are logged in **enforcing** too (`ausearch` works without permissive) —
+> you usually don't need permissive at all. If you do need to surface the *full
+> chain* (enforcing stops at the first denial), make **only the service's domain**
+> permissive — **NEVER global `setenforce 0`**:
+> ```bash
+> sudo semanage permissive -a <service-domain>   # the domain of the 203/EXEC binary
+> #   ... start + exercise, collect, audit2allow -M, semodule -i ...
+> sudo semanage permissive -d <service-domain>
+> ```
+> ⚠️ **Global `setenforce 0` then back to enforcing can black-screen the desktop**
+> (see `sirius-selinux-blackscreen.md`) — recover with `fixfiles -F onboot && reboot`.
+> If `audit2allow` wants anything broad (`sys_admin`, a wide `execmem`), **stop** —
+> that's a mislabel `restorecon` should fix, not an `allow`.
 
 ## 4. systemd unit (`/opt` paths; endpoint = file-forward + IDS sensor)
 ```bash
