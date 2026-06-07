@@ -88,11 +88,19 @@ were invisible. Both fixed + regression-locked.
   into the feed; aggregated mesh-wide by the relay. Reuses the daemon's
   `status.Server`; resurrects the cut `socket.py` reader. (Scope added 2026-06-06.)
 
-### Step 5 — multi-node polish
-- `node` field on `IdsEvent` (`models.py`) + a NODE column in the frontend
-  (`IdsFeed.tsx`, `types.ts`), set from the **verified** identity.
-- Sequence-gap + signed-heartbeat surfacing (suppression becomes visible).
-- **View-password** on the master aggregate (`app/viewauth.py`, `GUI_VIEW_PASSWORD`).
+### Step 5a/5b — DONE (`feat:` 3e3c01e)
+- **NODE column** — `IdsEvent.node` (set from the verified identity) rendered in
+  `IdsFeed.tsx`; `types.ts` gains the field.
+- **View-password** — `app/viewauth.py` gates the master's browser reads
+  (`/api/node`, `/api/ids`) on top of `require_peer`. Active only where
+  `GUI_VIEW_PASSWORD` is set (the master); no-op elsewhere. `POST /api/login`
+  mints an in-memory session token; the frontend stores it, a 401 drives the
+  `LoginGate` overlay. 4 viewauth unit tests; frontend builds clean.
+
+### Step 5c — deferred
+- Sequence-gap + signed-heartbeat surfacing so alert *suppression* is visible
+  (shipper heartbeats + master per-node expected-seq/last-seen + `IdsSource.MESH`
+  meta-events). Not built.
 
 ## Env vars introduced so far
 
@@ -104,9 +112,10 @@ were invisible. Both fixed + regression-locked.
 | `GUI_IDS_RELAY` | hub | `1` to enable the relay buffer |
 | `GUI_IDS_RELAY_DB`, `GUI_IDS_RELAY_CAP` | hub | relay db path / max buffered blobs |
 | `GUI_IDS_BLOB_MAX` | hub | max accepted blob size |
-
-(Step 4/5 will add `GUI_IDS_RELAY_URL`, `GUI_IDS_NODE_KEY`, `GUI_IDS_MASTER_KEY`,
-`GUI_IDS_MASTER_PUBKEY`, `GUI_VIEW_PASSWORD` — see the runbook.)
+| `GUI_IDS_RELAY_URL` | nodes + master | hub relay base URL (ship to / pull from) |
+| `GUI_IDS_NODE_KEY`, `GUI_IDS_MASTER_PUBKEY`, `GUI_IDS_NODE_ADDR` | sensor nodes | shipper: signer / seal-to key / own wg0 addr |
+| `GUI_IDS_MASTER_KEY` | master | X25519 private key (opens blobs) |
+| `GUI_VIEW_PASSWORD` | master | view-password gate (root-owned env file, never inline) |
 
 ## How to try what exists
 
