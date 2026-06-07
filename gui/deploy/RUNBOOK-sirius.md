@@ -80,8 +80,10 @@ sudo restorecon -Rv /opt/vpn-pi/gui/backend/.venv/bin
 ```bash
 sudo semanage port -a -t http_port_t -p tcp 8787 || sudo semanage port -m -t http_port_t -p tcp 8787
 ```
-### 3c. Install the unit (§4), start it, and clear any residual denials
-After §4's `systemctl start`, if `status` shows `203/EXEC` or the journal shows AVCs:
+### 3c. Clear residual denials — DO §4 FIRST, then come back here
+**The service unit doesn't exist yet — install + start it in §4** (its
+`enable --now` is the start). Return here **only if** `systemctl status
+su495-gui.service` then shows `203/EXEC` or the journal shows AVCs:
 ```bash
 sudo ausearch -m AVC -ts recent | audit2why          # WHY it's denied (read this)
 # collect into a tight module from the REAL denials, REVIEW, install:
