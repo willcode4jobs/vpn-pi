@@ -26,6 +26,7 @@ export type IdsSeverity = "info" | "warn" | "crit";
 export interface IdsEvent {
   id: string;
   at: string; // ISO 8601
+  node: string | null; // originating node (verified) in the mesh view; null on a node's own feed
   source: IdsSource;
   severity: IdsSeverity;
   subject: string;

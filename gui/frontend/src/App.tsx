@@ -1,6 +1,7 @@
 import { useFiles, useIds, useNode } from "./api";
 import { Files } from "./components/Files";
 import { IdsFeed } from "./components/IdsFeed";
+import { LoginGate } from "./components/LoginGate";
 import { StatusBar } from "./components/StatusBar";
 
 // One screen, two panels: the island file share (the headline service) and the
@@ -10,6 +11,19 @@ export default function App() {
   const node = useNode();
   const files = useFiles();
   const ids = useIds();
+
+  // On the master the polled reads are view-password gated; a 401 surfaces here.
+  if (node.authRequired || ids.authRequired) {
+    return (
+      <LoginGate
+        onAuthed={() => {
+          node.refetch();
+          ids.refetch();
+          files.refetch();
+        }}
+      />
+    );
+  }
 
   const signalLost = node.stale && node.data !== null;
 

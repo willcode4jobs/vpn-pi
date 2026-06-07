@@ -364,3 +364,53 @@ body {
   font-size: 11px;
   letter-spacing: 0.04em;
 }
+
+/* ---- view-password gate (master aggregate) ---- */
+.gate {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gate-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 320px;
+  padding: 22px;
+  background: var(--surface-real);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--degraded-rail);
+}
+
+.gate-box h2 {
+  margin: 0;
+  color: var(--degraded);
+  font-size: 13px;
+  letter-spacing: 0.1em;
+}
+
+.gate-box p {
+  margin: -6px 0 4px;
+  font-size: 11px;
+}
+
+.gate-box input {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  background: #0c0d08;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+
+.gate-box input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.gate-err {
+  color: var(--degraded);
+  font-size: 11px;
+}

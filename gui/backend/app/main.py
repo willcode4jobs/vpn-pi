@@ -24,6 +24,7 @@ from app.peers import resolve as resolve_peer
 from app.relay import RelayBatch, RelayDeposit, build_relay
 from app.sources import DataSource, build_data_source
 from app.store import FileNotFound, build_store
+from app.viewauth import LoginRequest, check_password, issue_token, require_view
 
 # IDS/identity source: mock (default) | host (real journald) | mesh (Step 4).
 # Selected by GUI_IDS — see app/sources/factory.py.
@@ -71,8 +72,20 @@ def _start_shipper() -> None:
     start_shipper(SOURCE)
 
 
+@app.post("/api/login")
+def login(body: LoginRequest) -> dict[str, str]:
+    """Exchange the view-password for a session token (master only — where
+    GUI_VIEW_PASSWORD is set). The browser sends the token as a Bearer header on
+    the gated reads. Wrong/absent password -> 401."""
+    if not check_password(body.password):
+        raise HTTPException(status_code=401, detail="bad view password")
+    return {"token": issue_token()}
+
+
 @app.get("/api/node", response_model=NodeIdentity)
-def get_node(_peer: str = Depends(require_peer)) -> NodeIdentity:
+def get_node(
+    _peer: str = Depends(require_peer), _view: None = Depends(require_view)
+) -> NodeIdentity:
     """Identity of this node. Polled by the masthead."""
     return SOURCE.node()
 
@@ -132,7 +145,11 @@ def delete_file(file_id: int, _peer: str = Depends(require_peer)) -> Response:
 
 
 @app.get("/api/ids", response_model=list[IdsEvent])
-def get_ids(limit: int = 100, _peer: str = Depends(require_peer)) -> list[IdsEvent]:
+def get_ids(
+    limit: int = 100,
+    _peer: str = Depends(require_peer),
+    _view: None = Depends(require_view),
+) -> list[IdsEvent]:
     """Host-security (IDS) feed, most-recent-first. Polled by the IDS panel."""
     return SOURCE.ids(limit=limit)
 

@@ -34,6 +34,7 @@ export function IdsFeed({ poll }: { poll: Poll<IdsEvent[]> }) {
               <th className="col-rail" />
               <th>TIME</th>
               <th>SEV</th>
+              <th>NODE</th>
               <th>SOURCE</th>
               <th>SUBJECT</th>
               <th>EVENT</th>
@@ -45,6 +46,7 @@ export function IdsFeed({ poll }: { poll: Poll<IdsEvent[]> }) {
                 <td className="col-rail" />
                 <td className="num dim">{clock(e.at)}</td>
                 <td className={`state-label v-${e.severity}`}>{SEV_LABEL[e.severity]}</td>
+                <td className="peer-name">{e.node ?? "—"}</td>
                 <td className="src-tag">{e.source}</td>
                 <td className="peer-name">{e.subject}</td>
                 <td>{e.message}</td>
