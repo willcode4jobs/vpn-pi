@@ -53,6 +53,7 @@ committed to (`docs/worklog-2026-06-05.md`, "IDS mesh view → polaris, not vega
 | [04-connectivity-and-deployment.md](04-connectivity-and-deployment.md) | Topology reality, the relay port, per-node deploy (incl. sirius SELinux), admin access |
 | [05-implementation-plan.md](05-implementation-plan.md) | Build sequence, file-by-file changes, verification, honest estimate |
 | [06-views-and-attribution.md](06-views-and-attribution.md) | Why the per-node GUI (vega) and master GUI (polaris) show different data; how the NODE column is filled |
+| [07-fail2ban-bruteforce.md](07-fail2ban-bruteforce.md) | Attempt timeline + enriched bans + live JAILS panel; per-node scope; the sudoers grant |
 | [BUILD-STATUS.md](BUILD-STATUS.md) | What's actually implemented vs the plan (live status) |
 
 Operational: [`gui/deploy/RUNBOOK-ids-nodes.md`](../../gui/deploy/RUNBOOK-ids-nodes.md)

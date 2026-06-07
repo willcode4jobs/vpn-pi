@@ -97,10 +97,28 @@ were invisible. Both fixed + regression-locked.
   mints an in-memory session token; the frontend stores it, a 401 drives the
   `LoginGate` overlay. 4 viewauth unit tests; frontend builds clean.
 
+### fail2ban brute-force integration — DONE (`feat:` c0fbe75, 4b6089c)
+- **Attack timeline** — sshd `Failed password` aggregated per source IP → one
+  `AUTH/WARN` per IP (stable id); **enriched bans** — `AUTH/CRIT` with the jail +
+  folded-in failure count. The feed reads as attempt-buildup → ban.
+- **Live JAILS panel** — `app/sources/fail2ban.py` → `GET /api/jails` →
+  `JailsPanel` (current bans, per-node, labeled "this node"). **Journal-derived**
+  (Ban − Unban from `journalctl -u fail2ban`) — **no sudo / no privilege
+  elevation**; reuses the `systemd-journal` group. Degrades to empty if the
+  journal is unreadable. See `07-fail2ban-bruteforce.md`.
+
+### Debug pass — DONE (`fix:` 484e9a2)
+Audit of the IDS/auth/fail2ban surface; fixed: master memory leak
+(`MeshDataSource._events` now bounded), brute-force re-ship (stable id), 500-on-sort
+(normalize/defensive), the `journalctl` subprocess storm (memo + 3s cache), the
+`usePoll` abort-flap (skip-if-inflight), and unbounded/never-expiring view tokens
+(TTL + prune). 56 tests; regressions added.
+
 ### Step 5c — deferred
 - Sequence-gap + signed-heartbeat surfacing so alert *suppression* is visible
   (shipper heartbeats + master per-node expected-seq/last-seen + `IdsSource.MESH`
-  meta-events). Not built.
+  meta-events). Not built. (Note for then: `seq` is node-attested, not
+  hub-attested — a registered node can poison its own seq space.)
 
 ## Env vars introduced so far
 

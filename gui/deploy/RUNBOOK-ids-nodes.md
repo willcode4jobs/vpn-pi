@@ -77,7 +77,13 @@ journalctl -n1 >/dev/null && echo "journal readable"   # as the service user
 ```
 
 This covers every sensor (fail2ban/auth, sshd/login, kernel/usb, boots) since
-they all surface in the journal.
+they all surface in the journal — including the IDS feed's **ban + brute-force
+attempt events** AND the live **JAILS panel**. No further grant is needed: the
+JAILS panel is **journal-derived** (Ban − Unban from `journalctl -u fail2ban`),
+**not** `sudo fail2ban-client` — so there is no sudoers rule and no privilege
+elevation. The `systemd-journal` group above is the only access required.
+(`/api/jails` returns empty if the journal is unreadable; see
+`docs/ids-planning/07-fail2ban-bruteforce.md`.)
 
 ---
 
