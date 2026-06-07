@@ -72,6 +72,12 @@ class TestHostSource(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GUI_NODE_NAME": "sirius"}, clear=False):
             self.assertEqual(HostDataSource(runner=_runner).node().name, "sirius")
 
+    def test_own_events_carry_this_nodes_address(self) -> None:
+        # a local feed labels every event with this node's wg0 address (no blanks)
+        with mock.patch.dict(os.environ, {"GUI_IDS_NODE_ADDR": "10.42.0.2"}, clear=False):
+            src = HostDataSource(runner=_runner)
+        self.assertTrue(all(e.node == "10.42.0.2" for e in src.ids()))
+
     def test_auth_ban_is_crit_with_ip_subject(self) -> None:
         auth = [e for e in self.src.ids() if e.source is IdsSource.AUTH]
         self.assertEqual(len(auth), 1)

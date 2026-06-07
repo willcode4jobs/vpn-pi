@@ -118,6 +118,16 @@ class HostDataSource:
             role=os.environ.get("GUI_NODE_ROLE", "relay"),
             wg_interface=os.environ.get("GUI_WG_IFACE", "wg0"),
         )
+        # Label this node's own events with its own identity so the NODE column
+        # isn't blank on a local feed. Prefer the wg0 address (matches how the
+        # master attributes remote events); fall back to the node name. On the
+        # master, remote events get re-stamped from the VERIFIED signature
+        # (app/sources/mesh.py), so this self-label only governs local rows.
+        self._self_node = (
+            os.environ.get("GUI_IDS_NODE_ADDR")
+            or os.environ.get("GUI_BIND")
+            or self._self.name
+        )
 
     def node(self) -> NodeIdentity:
         return self._self
@@ -128,6 +138,8 @@ class HostDataSource:
         events += self._login_events()
         events += self._usb_events()
         events += self._reboot_events()
+        for e in events:
+            e.node = self._self_node  # this node's own events carry its identity
         events.sort(key=lambda e: e.at, reverse=True)
         return events[:limit]
 
