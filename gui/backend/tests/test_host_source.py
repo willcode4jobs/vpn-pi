@@ -41,7 +41,10 @@ _AUTH = "\n".join(
 )
 _LOGIN = "\n".join(
     [
-        # a FAILED auth has "for <u> from <ip>" too; must NOT become a LOGIN
+        # brute-force buildup: two failures from .77 (which then gets banned),
+        # one from .9 (attempts but no ban). FAILED auths must NOT become LOGINs.
+        _rec("Failed password for root from 203.0.113.77 port 1 ssh2", 2_500_000_000, ident="sshd"),
+        _rec("Failed password for root from 203.0.113.77 port 2 ssh2", 2_600_000_000, ident="sshd"),
         _rec("Failed password for billy from 10.0.0.9 port 5 ssh2", 2_900_000_000, ident="sshd"),
         _rec("Accepted publickey for billy from 192.168.1.50 port 51000", 3_000_000_000, ident="sshd"),
     ]
@@ -78,12 +81,26 @@ class TestHostSource(unittest.TestCase):
             src = HostDataSource(runner=_runner)
         self.assertTrue(all(e.node == "10.42.0.2" for e in src.ids()))
 
-    def test_auth_ban_is_crit_with_ip_subject(self) -> None:
-        auth = [e for e in self.src.ids() if e.source is IdsSource.AUTH]
-        self.assertEqual(len(auth), 1)
-        self.assertEqual(auth[0].severity, IdsSeverity.CRIT)
-        self.assertEqual(auth[0].subject, "203.0.113.77")
-        self.assertIn("Ban", auth[0].message)
+    def test_ban_is_crit_and_enriched_with_count(self) -> None:
+        bans = [
+            e for e in self.src.ids()
+            if e.source is IdsSource.AUTH and e.severity is IdsSeverity.CRIT
+        ]
+        self.assertEqual(len(bans), 1)
+        self.assertEqual(bans[0].subject, "203.0.113.77")
+        self.assertIn("banned 203.0.113.77", bans[0].message)
+        self.assertIn("[sshd]", bans[0].message)
+        self.assertIn("2 failed", bans[0].message)  # folded-in brute-force count
+
+    def test_bruteforce_attempts_aggregate_to_one_warn_per_ip(self) -> None:
+        warns = [
+            e for e in self.src.ids()
+            if e.source is IdsSource.AUTH and e.severity is IdsSeverity.WARN
+        ]
+        by_ip = {e.subject: e for e in warns}
+        self.assertEqual(set(by_ip), {"203.0.113.77", "10.0.0.9"})  # one per IP, not per attempt
+        self.assertIn("2 failed", by_ip["203.0.113.77"].message)
+        self.assertIn("1 failed", by_ip["10.0.0.9"].message)
 
     def test_login_is_info_with_user_at_host_subject(self) -> None:
         login = [e for e in self.src.ids() if e.source is IdsSource.LOGIN]

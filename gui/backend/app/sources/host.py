@@ -43,8 +43,9 @@ JournalRunner = Callable[[list[str]], str]
 # A real fail2ban ban is "Ban <ip>" — anchored on a following IP so it can't
 # match the unit's own "Started fail2ban.service" / "Fail2Ban Service" lines.
 _BAN_RE = re.compile(r"\bBan\s+((?:\d{1,3}\.){3}\d{1,3})")
-_LOGIN_RE = re.compile(r"for (?:invalid user )?(\S+) from (\S+)")
+_LOGIN_RE = re.compile(r"for (?:invalid user )?(\S+) from (\S+)")  # also matches "Failed password for…"
 _USB_RE = re.compile(r"usb-storage\s+([\w\-:.]+)")
+_JAIL_RE = re.compile(r"\[([\w-]+)\]")  # the fail2ban jail, e.g. [sshd]
 
 
 def _default_runner(args: list[str]) -> str:
@@ -133,8 +134,10 @@ class HostDataSource:
         return self._self
 
     def ids(self, limit: int = 100) -> list[IdsEvent]:
+        failed = self._failed_auths()  # ip -> aggregated failed-ssh-auth buildup
         events: list[IdsEvent] = []
-        events += self._auth_events()
+        events += self._auth_events(failed)       # bans (CRIT), enriched with count
+        events += self._bruteforce_events(failed)  # attempts (WARN), one per IP
         events += self._login_events()
         events += self._usb_events()
         events += self._reboot_events()
@@ -162,14 +165,59 @@ class HostDataSource:
                 continue
         return recs
 
-    def _auth_events(self) -> list[IdsEvent]:
+    def _auth_events(self, failed: dict[str, dict]) -> list[IdsEvent]:
         out: list[IdsEvent] = []
         for rec in self._json(["-u", "fail2ban"]):
-            m = _BAN_RE.search(_message(rec))  # real "Ban <ip>" only — skips lifecycle lines
+            msg = _message(rec)
+            m = _BAN_RE.search(msg)  # real "Ban <ip>" only — skips lifecycle lines
             if not m:
                 continue
-            ev = _event(rec, IdsSource.AUTH, IdsSeverity.CRIT, m.group(1))
+            ip = m.group(1)
+            jail = _JAIL_RE.search(msg)
+            jail_name = jail.group(1) if jail else "sshd"
+            ev = _event(rec, IdsSource.AUTH, IdsSeverity.CRIT, ip)
             if ev:
+                # fold in the correlated brute-force count (A2): the ban reads as
+                # the consequence of the attempts surfaced by _bruteforce_events.
+                n = failed.get(ip, {}).get("count")
+                detail = f" — {n} failed {jail_name} auths" if n else ""
+                ev.message = f"fail2ban: banned {ip} [{jail_name}]{detail}"
+                out.append(ev)
+        return out
+
+    def _failed_auths(self) -> dict[str, dict]:
+        """Aggregate sshd 'Failed password' lines by source IP — the brute-force
+        buildup. ip -> {count, at(latest), user, rec(latest)}. Used for the WARN
+        attempt events and to enrich the ban (so one attack = at most two rows,
+        not one-per-attempt)."""
+        agg: dict[str, dict] = {}
+        for rec in self._json(["_COMM=sshd", "_COMM=sshd-session"]):
+            msg = _message(rec)
+            if "Failed password" not in msg:
+                continue
+            m = _LOGIN_RE.search(msg)
+            if not m:
+                continue
+            user, ip = m.group(1), m.group(2)
+            at = _at(rec)
+            cur = agg.get(ip)
+            if cur is None:
+                agg[ip] = {"count": 1, "at": at, "user": user, "rec": rec}
+            else:
+                cur["count"] += 1
+                if at is not None and (cur["at"] is None or at > cur["at"]):
+                    cur.update(at=at, user=user, rec=rec)  # keep the latest attempt
+        return agg
+
+    def _bruteforce_events(self, failed: dict[str, dict]) -> list[IdsEvent]:
+        """One WARN per source IP for the failed-auth buildup (not per attempt)."""
+        out: list[IdsEvent] = []
+        for ip, info in failed.items():
+            ev = _event(info["rec"], IdsSource.AUTH, IdsSeverity.WARN, ip)
+            if ev:
+                ev.message = (
+                    f"sshd: {info['count']} failed ssh auths from {ip} (user {info['user']})"
+                )
                 out.append(ev)
         return out
 
