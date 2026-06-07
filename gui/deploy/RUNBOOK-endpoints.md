@@ -1,114 +1,101 @@
-# Onboard the endpoints — sirius + altair (sensors)
+# Onboard the endpoints — sirius + altair
 
-Both are x86 endpoint **sensors**: read their local journal, ship sealed alerts to
-the hub (vega `10.42.0.2`), and serve their *own* local feed. They sit at other
-sites — **spokes behind NAT**, so the wg tunnel to the hub must stay up for the
-shipper. Shared mechanics: [`RUNBOOK-onboard.md`](RUNBOOK-onboard.md) (sensor
-role). This doc covers what's different about each box.
+The two endpoints are **different machines with different roles** — don't apply one
+to the other:
 
-| node | wg0 | quirk |
-|---|---|---|
-| sirius | 10.42.0.5 | SELinux enforcing → `/opt` deploy + py3.12 + policy |
-| altair | 10.42.0.4 | **actively-used GUI workstation** → wg-tools + local-browser workarounds |
+| node | wg0 | what it is | role |
+|---|---|---|---|
+| sirius | 10.42.0.5 | x86 **Linux** (SELinux) | **sensor** — reads its journal, ships sealed alerts to the hub |
+| altair | 10.42.0.4 | old **MacBook** (macOS) | **viewer** — browses the island GUI; *cannot* be a sensor (see Part B) |
 
-> Assumption for altair: it's a daily-driver desktop (DE + browser, a person works
-> on it), not a headless Pi. If that's wrong, treat it like sirius minus SELinux.
+Shared sensor mechanics: [`RUNBOOK-onboard.md`](RUNBOOK-onboard.md). The mesh/view
+model: [`../../docs/ids-planning/06-views-and-attribution.md`](../../docs/ids-planning/06-views-and-attribution.md).
 
 ---
 
-## 0. Prereqs (both)
-- `harden-base.sh` applied (fail2ban sshd jail, nftables default-deny).
-- **fail2ban → journal** (or bans never reach the GUI):
+# Part A — sirius (Linux sensor)
+
+A real endpoint sensor: journald + fail2ban → sealed alerts → the hub. Spoke behind
+NAT, so the wg tunnel to the hub must be up.
+
+## A0. Prereqs
+- `harden-base.sh` applied (fail2ban sshd jail, nftables).
+- **fail2ban → journal** (else bans never reach the GUI):
   ```bash
   printf '[Definition]\nlogtarget = SYSTEMD-JOURNAL\n' | sudo tee /etc/fail2ban/fail2ban.local >/dev/null
   sudo systemctl restart fail2ban
   ```
-- **wg tunnel up to the hub** — verify with wg tools before anything else (the
-  shipper is useless without it):
+- **wg tunnel up to the hub:**
   ```bash
-  sudo wg show wg0                     # expect a peer = hub, "latest handshake" < ~2min
-  ping -c2 10.42.0.2                    # hub reachable over wg
-  curl -s --max-time 5 http://10.42.0.2:8787/api/health   # {"status":"ok"}
+  sudo wg show wg0 ; ping -c2 10.42.0.2 ; curl -s --max-time5 10.42.0.2:8787/api/health
   ```
-  Down? `sudo wg-quick up wg0`. Make it boot-persistent: `sudo systemctl enable --now wg-quick@wg0`.
+  Down? `sudo wg-quick up wg0`; persist with `sudo systemctl enable --now wg-quick@wg0`.
 
-## 1. Common sensor setup (both)
+## A1. Sensor setup
 Run the **sensor** path of [`RUNBOOK-onboard.md`](RUNBOOK-onboard.md): code +
-py3.12 venv, `systemd-journal` group, **keys** (generate a node key, copy the
-hub/master's `master.pub` here, register *this node's* verify key on polaris as
-`10.42.0.5=…` / `10.42.0.4=…`), and the env block under `[Service]`:
-```ini
-Environment=GUI_IDS=host
-Environment=GUI_NODE_NAME=sirius            # or altair
-Environment=GUI_IDS_NODE_KEY=/var/lib/vpn-pi/ids/node.key
-Environment=GUI_IDS_MASTER_PUBKEY=/var/lib/vpn-pi/ids/master.pub
-Environment=GUI_IDS_RELAY_URL=http://10.42.0.2:8787
-Environment=GUI_IDS_NODE_ADDR=10.42.0.5     # or 10.42.0.4
-```
-(user is `brichardt` on sirius; adjust the unit's `User=`/`WorkingDirectory=`.)
+**py3.12** venv (no cp314 wheels), `systemd-journal` group, keys (node key here,
+register *its* verify key on polaris as `10.42.0.5=…`), and the env block
+(`GUI_IDS=host`, `GUI_NODE_NAME=sirius`, node key, master pubkey,
+`GUI_IDS_RELAY_URL=http://10.42.0.2:8787`, `GUI_IDS_NODE_ADDR=10.42.0.5`). User is
+`brichardt` — set the unit's `User=`/`WorkingDirectory=` to match.
 
----
-
-## 2. sirius — SELinux
+## A2. SELinux
 SELinux blocks a service exec'ing a venv under `/home` (`203/EXEC`). Per
-[`RUNBOOK-ids-nodes.md §8`](RUNBOOK-ids-nodes.md):
-- deploy the app under **`/opt/vpn-pi`** (not `$HOME`); build the venv there with
-  **`python3.12`** (no cp314 wheels for pynacl/pydantic);
-- relabel (`semanage fcontext … bin_t` + `restorecon`) and, if denials remain,
-  build a tight policy module with `audit2allow` (Tier 2).
-- sirius has a browser → view its own feed locally (§3b applies to it too).
+[`RUNBOOK-ids-nodes.md §8`](RUNBOOK-ids-nodes.md): deploy under **`/opt/vpn-pi`**,
+`restorecon`/`semanage fcontext` the venv, and `audit2allow` any remaining denials
+into a tight policy module. sirius has a browser → view its own feed at
+`http://127.0.0.1:8787` locally (no SSH tunnel).
 
-## 3. altair — actively-used GUI workstation (workarounds)
-A desktop isn't an always-on Pi: the tunnel drops on sleep/reconnect, and the user
-wants the dashboard locally. Two workarounds.
-
-### 3a. Keep the tunnel up — wg tools
-The shipper delivers only while wg0→hub is up. For a desktop behind NAT:
-- **PersistentKeepalive** so the tunnel survives NAT idle timeouts — in altair's
-  wg config under the **hub** `[Peer]`:
-  ```ini
-  # /etc/wireguard/wg0.conf   [Peer] = the hub (vega)
-  PersistentKeepalive = 25
-  ```
-- **Auto-up + survive reboot:** `sudo systemctl enable --now wg-quick@wg0`.
-- **After sleep / network change** the handshake may go stale — bounce it:
-  ```bash
-  sudo wg show wg0            # "latest handshake" stale (> a few min)?
-  sudo wg-quick down wg0 && sudo wg-quick up wg0
-  ```
-  (For hands-off: a NetworkManager `dispatcher.d` hook that re-ups wg0 on
-  connect/resume.)
-- Degradation is graceful — the shipper retries, never crashes — but undelivered
-  alerts are bounded by the journal window, so **tunnel uptime is the thing to
-  watch**; keepalive is the fix, `wg show` is the check.
-
-### 3b. View the dashboard locally — no SSH tunnel
-altair has a browser, so bind the GUI to **loopback** and open it directly:
-- ExecStart `… --host 127.0.0.1 --port 8787`; browse **`http://127.0.0.1:8787`**.
-- This is altair's *own* local feed (it's a sensor) — the user sees their machine's
-  security events. The whole-mesh view still lives on polaris.
-- Optional: a `.desktop` autostart entry that opens the dashboard on login.
-
-### 3c. Coexist with the desktop
-- Run as a **system service, loopback-bound** — never a LAN/public bind on a
-  daily-driver. The view-password isn't needed (loopback, single local user).
-- The user's own ssh logins surface as `LOGIN` events; failed ones as brute-force
-  `WARN` — that's the sensor working, not noise to suppress.
+## A3. Verify
+```bash
+sudo fail2ban-client set sshd banip 203.0.113.99      # TEST-NET ip; not your own!
+#   on polaris: the CRIT ban appears attributed to 10.42.0.5
+sudo fail2ban-client set sshd unbanip 203.0.113.99
+```
 
 ---
 
-## 4. Verify (both)
-```bash
-# tunnel + reachability
-sudo wg show wg0 ; curl -s --max-time5 10.42.0.2:8787/api/health
+# Part B — altair (macOS viewer)
 
-# shipping → the master: fake-ban on the endpoint, watch it on polaris's mesh feed
-sudo fail2ban-client set sshd banip 203.0.113.99        # TEST-NET ip; not your own!
-#   on polaris: the CRIT ban appears attributed to 10.42.0.5 / 10.42.0.4
-# local view (sirius/altair): own feed + the test ban in the JAILS panel
-curl -s 127.0.0.1:8787/api/ids | python3 -m json.tool | head
-sudo fail2ban-client set sshd unbanip 203.0.113.99      # clean up
-```
-Healthy endpoint = `wg show` recent handshake + the ban round-trips to polaris's
-aggregate. If it doesn't reach polaris but is in the local feed, the tunnel/relay
-path is the suspect (re-check §0 / §3a).
+altair is an old MacBook. **It is a viewer, not a sensor** — and that's a hard
+limit, not a choice: the IDS sensor is built on `journalctl` and fail2ban, and
+**macOS has neither** (unified logging / `log show`; no fail2ban). So altair runs
+no backend and ships nothing; it *consumes* the GUI other nodes serve. (A macOS
+sensor reading the unified log would be a separate future build.)
+
+So altair onboarding is just two things: get on the wg network, and browse.
+
+## B1. WireGuard — the macOS GUI app (the convention)
+Use the official **WireGuard app** (Mac App Store), not `wg-quick`/`/etc/wireguard`:
+1. **+ → Add empty tunnel** (or import a `.conf`). Config:
+   ```ini
+   [Interface]
+   PrivateKey = <altair's private key>          # generated by the app / by you
+   Address    = 10.42.0.4/32
+   [Peer]
+   PublicKey  = <hub (vega) public key>
+   Endpoint   = <vega public ip>:51820
+   AllowedIPs = 10.42.0.0/24                     # the island only (split tunnel)
+   PersistentKeepalive = 25                      # survive NAT idle (a laptop isn't always-on)
+   ```
+2. Toggle the tunnel **on** from the menu-bar icon; enable **On-Demand** so it
+   re-activates automatically.
+3. Verify: `ping 10.42.0.2`. The app's tunnel detail shows "latest handshake."
+4. *Optional* CLI checks: `brew install wireguard-tools` → `sudo wg show` (the app's
+   tunnel appears as a `utun…` interface). Not required — the app UI shows the same.
+
+> Keys are yours to generate (the app can mint the keypair). Hand the **public**
+> key to whoever adds altair as a `[Peer]` on the hub; nothing private leaves the Mac.
+
+## B2. Browse the island
+With the tunnel up:
+- **File share + the hub's own feed:** `http://10.42.0.2:8787` (vega) over wg.
+  altair `10.42.0.4` is already on the wg0 peer allowlist, so it loads.
+- **The whole-mesh IDS view (the master):** polaris binds loopback, so tunnel in
+  from the Mac terminal and browse locally —
+  `ssh -L 8787:10.42.0.1:8787 polaris` → `http://127.0.0.1:8787` → view-password.
+
+## B3. What altair does NOT need
+No backend service, no Python venv, no IDS node key, no `systemd-journal` group,
+no fail2ban config — those are all sensor concerns. If altair should ever *report*
+its own security posture, that's the macOS-sensor build, tracked separately.
