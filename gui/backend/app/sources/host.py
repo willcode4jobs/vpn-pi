@@ -40,7 +40,9 @@ _TIMEOUT_S = 10
 # Runs `journalctl --no-pager <args...>` and returns stdout. Injectable for tests.
 JournalRunner = Callable[[list[str]], str]
 
-_IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+# A real fail2ban ban is "Ban <ip>" — anchored on a following IP so it can't
+# match the unit's own "Started fail2ban.service" / "Fail2Ban Service" lines.
+_BAN_RE = re.compile(r"\bBan\s+((?:\d{1,3}\.){3}\d{1,3})")
 _LOGIN_RE = re.compile(r"for (?:invalid user )?(\S+) from (\S+)")
 _USB_RE = re.compile(r"usb-storage\s+([\w\-:.]+)")
 
@@ -151,24 +153,25 @@ class HostDataSource:
     def _auth_events(self) -> list[IdsEvent]:
         out: list[IdsEvent] = []
         for rec in self._json(["-u", "fail2ban"]):
-            msg = _message(rec)
-            if "Ban " not in msg:  # bans only, not unbans/notices
+            m = _BAN_RE.search(_message(rec))  # real "Ban <ip>" only — skips lifecycle lines
+            if not m:
                 continue
-            ip = _IP_RE.search(msg)
-            ev = _event(rec, IdsSource.AUTH, IdsSeverity.CRIT, ip.group(0) if ip else "unknown")
+            ev = _event(rec, IdsSource.AUTH, IdsSeverity.CRIT, m.group(1))
             if ev:
                 out.append(ev)
         return out
 
     def _login_events(self) -> list[IdsEvent]:
         out: list[IdsEvent] = []
-        for rec in self._json(["_COMM=sshd"]):
+        # OpenSSH >= 9.6 logs accepted auths from sshd-session, not sshd; match both.
+        for rec in self._json(["_COMM=sshd", "_COMM=sshd-session"]):
             msg = _message(rec)
-            if "Accepted " not in msg:  # successful auths; failures are fail2ban's job
+            if "Accepted " not in msg:  # successes only; "Failed password ..." is fail2ban's job
                 continue
             m = _LOGIN_RE.search(msg)
-            subject = f"{m.group(1)}@{m.group(2)}" if m else "unknown"
-            ev = _event(rec, IdsSource.LOGIN, IdsSeverity.INFO, subject)
+            if not m:  # require the "for <user> from <ip>" shape — no bare "unknown" logins
+                continue
+            ev = _event(rec, IdsSource.LOGIN, IdsSeverity.INFO, f"{m.group(1)}@{m.group(2)}")
             if ev:
                 out.append(ev)
         return out

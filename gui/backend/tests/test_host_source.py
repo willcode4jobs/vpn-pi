@@ -29,10 +29,22 @@ def _rec(message: str, ts_us: int, *, ident: str = "kernel", comm: str = "kernel
     )
 
 
-# canned outputs keyed by the sensor selector present in the journalctl args
-_AUTH = "\n".join([_rec("NOTICE [sshd] Ban 203.0.113.77", 2_000_000_000, ident="fail2ban")])
+# canned outputs keyed by the sensor selector present in the journalctl args.
+# Each includes a NOISE line that previously caused a false positive, so the
+# filters are regression-locked.
+_AUTH = "\n".join(
+    [
+        # systemd lifecycle line — "Fail2Ban Service" contains "Ban "; must NOT match
+        _rec("Started fail2ban.service - Fail2Ban Service.", 1_900_000_000, ident="systemd"),
+        _rec("NOTICE [sshd] Ban 203.0.113.77", 2_000_000_000, ident="fail2ban"),
+    ]
+)
 _LOGIN = "\n".join(
-    [_rec("Accepted publickey for billy from 192.168.1.50 port 51000", 3_000_000_000, ident="sshd")]
+    [
+        # a FAILED auth has "for <u> from <ip>" too; must NOT become a LOGIN
+        _rec("Failed password for billy from 10.0.0.9 port 5 ssh2", 2_900_000_000, ident="sshd"),
+        _rec("Accepted publickey for billy from 192.168.1.50 port 51000", 3_000_000_000, ident="sshd"),
+    ]
 )
 _KERNEL = "\n".join(
     [
