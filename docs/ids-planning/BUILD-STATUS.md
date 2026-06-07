@@ -67,6 +67,18 @@ What's actually implemented on `feat/ids-mesh` so far, versus the plan
 `./.venv/bin/python -m unittest discover -s tests` — with no journal, keys, or
 network needed (everything is injected).
 
+### Proven LIVE on real hardware (2026-06-06)
+Ran `gui/deploy/RUNBOOK-ids-live-test.md` on **vega (hub+sensor) + polaris
+(master)**: a real journald event on vega was sealed, buffered as opaque
+ciphertext on the hub, pulled by polaris, decrypted, verified, and attributed
+(`"node":"10.42.0.2"`) in its aggregate feed. The blind-relay spine works end to
+end on actual nodes — not just unit-tested.
+
+Field fixes the live run surfaced (`fix:` f3a0ec6): the fail2ban filter matched
+the substring "Ban " in systemd's "Started fail2ban.service" → bogus CRIT;
+OpenSSH ≥9.6 logs accepted auths from `sshd-session` not `sshd` → real logins
+were invisible. Both fixed + regression-locked.
+
 ## Not built yet
 
 ### Step 4a — daemon connection sensor

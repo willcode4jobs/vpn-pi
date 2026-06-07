@@ -19,41 +19,60 @@ each Pi as a safety net (these touch the unit + restart).
 ## 1. Code on both nodes (vega and polaris)
 
 ```bash
-cd ~/projects/vpn-pi && git fetch origin && git checkout feat/ids-mesh && git pull
-cd gui/backend && ./.venv/bin/pip install -r requirements.txt   # pulls pynacl
+cd ~/projects/vpn-pi && git fetch origin
+git checkout feat/ids-mesh && git pull
+```
+**If checkout aborts** with "untracked working tree files would be overwritten"
+(rsync/deploy artifacts like `pi-deployment/open-gui-port.sh` that aren't in git),
+reconcile — preserves everything, reversible (NOT `git clean -fd`):
+```bash
+git stash push --include-untracked -m "pre-ids-mesh artifacts"
+git checkout feat/ids-mesh && git pull        # now succeeds; drop the stash later
+```
+Then the venv — the `pip --upgrade` is **required** (an old pip won't match
+PyNaCl's aarch64 abi3 wheel and will try, and fail, to build from source):
+```bash
+cd gui/backend
+./.venv/bin/pip install --upgrade pip
+./.venv/bin/pip install -r requirements.txt   # pulls pynacl
 ./.venv/bin/python -c "import nacl; print('pynacl ok')"
 ```
-If pip tries to *compile* pynacl (no aarch64 wheel for your Python), install
-`build-essential libffi-dev` and retry, or use the system python that has a wheel.
+If pip still tries to *compile* pynacl: `sudo apt install -y build-essential libffi-dev python3-dev` and retry.
 
 ---
 
 ## 2. Keys (you generate — I never hold these)
 
-```bash
-# both nodes: keydir
-sudo mkdir -p /var/lib/vpn-pi/ids && sudo chown billy:billy /var/lib/vpn-pi/ids
+> Generate on each node locally. The keydir is on **both** nodes. polaris and
+> vega have **no SSH keys to each other** — don't set that up. The two public
+> keys are single base64 lines, so exchange them by **hand-copy** between your
+> SSH sessions (or scp *from the Mac*, which has keys to both). Nothing secret
+> moves.
 
-# polaris (master) — the X25519 pair
+**On polaris (the master):**
+```bash
+sudo mkdir -p /var/lib/vpn-pi/ids && sudo chown billy:billy /var/lib/vpn-pi/ids
 cd ~/projects/vpn-pi/gui/backend
 ./.venv/bin/python ../deploy/ids-keygen.py master --out /var/lib/vpn-pi/ids
-#   -> master.key (0600) + master.pub. Note the printed master public key.
-
-# vega (sensor) — its Ed25519 signer
-./.venv/bin/python ../deploy/ids-keygen.py node --out /var/lib/vpn-pi/ids
-#   -> node.key (0600). COPY the printed "verify key" — you register it next.
+cat /var/lib/vpn-pi/ids/master.pub        # COPY this line -> paste on vega below
 ```
 
-Distribute (only public material moves):
+**On vega (the sensor):**
 ```bash
-# copy polaris's master.pub to vega
-scp polaris:/var/lib/vpn-pi/ids/master.pub /tmp/master.pub
-scp /tmp/master.pub vega:/tmp/master.pub
-ssh vega 'sudo install -o billy -g billy -m644 /tmp/master.pub /var/lib/vpn-pi/ids/master.pub'
+sudo mkdir -p /var/lib/vpn-pi/ids && sudo chown billy:billy /var/lib/vpn-pi/ids
+cd ~/projects/vpn-pi/gui/backend
+./.venv/bin/python ../deploy/ids-keygen.py node --out /var/lib/vpn-pi/ids
+#   -> prints vega's VERIFY KEY. COPY it -> paste on polaris below.
 
-# register vega's verify key on polaris (the registry the master trusts)
-ssh polaris 'echo "10.42.0.2=<VEGA_VERIFY_KEY>" | sudo tee /var/lib/vpn-pi/ids/registry'
-ssh polaris 'sudo chown billy:billy /var/lib/vpn-pi/ids/registry'
+# paste polaris's master.pub line here:
+echo 'PASTE_MASTER_PUB_LINE' | sudo tee /var/lib/vpn-pi/ids/master.pub
+sudo chown billy:billy /var/lib/vpn-pi/ids/master.pub
+```
+
+**Back on polaris** — register vega's verify key in the registry the master trusts:
+```bash
+echo '10.42.0.2=PASTE_VEGA_VERIFY_KEY' | sudo tee /var/lib/vpn-pi/ids/registry
+sudo chown billy:billy /var/lib/vpn-pi/ids/registry
 ```
 
 ---
@@ -63,6 +82,9 @@ ssh polaris 'sudo chown billy:billy /var/lib/vpn-pi/ids/registry'
 ```bash
 sudo usermod -aG systemd-journal billy
 #   the group takes effect when the service restarts (step 5)
+# verify (run it AFTER the step-5 restart) — the service user must read the journal,
+# else HostDataSource degrades to an empty feed and the shipper has nothing to send:
+sudo -u billy journalctl -n1 >/dev/null 2>&1 && echo "journal readable" || echo "STILL BLOCKED"
 ```
 
 ---
@@ -120,21 +142,25 @@ curl -s 10.42.0.2:8787/api/ids | python3 -m json.tool | head
 # on vega
 curl -s '10.42.0.2:8787/api/ids/relay?since=0' | python3 -m json.tool | head
 #   -> {"cursor": N, "blobs": [{"node":"10.42.0.2","seq":1,"ct":"<base64>"}, ...]}
-sudo sqlite3 /var/lib/vpn-pi/ids-relay.db 'SELECT node,seq,substr(ct,1,24) FROM relay LIMIT 3;'
+# at-rest check (optional — the curl above already shows opaque ct). The venv
+# python has sqlite3 built in, so no `apt install sqlite3` needed:
+./.venv/bin/python -c "import sqlite3; print(sqlite3.connect('/var/lib/vpn-pi/ids-relay.db').execute('SELECT node,seq,substr(ct,1,24) FROM relay LIMIT 3').fetchall())"
 #   -> ct is base64 ciphertext; no plaintext message anywhere. The hub is blind.
 ```
 
 **c. polaris sees vega's events, decrypted + attributed** — the proof:
 ```bash
-# on polaris (loopback passes the wg0 allowlist)
-curl -s 127.0.0.1:8787/api/ids | python3 -m json.tool
+# on polaris — it binds its OWN wg0 address (10.42.0.1), NOT loopback.
+# confirm the bind first: sudo ss -tlnp | grep ':8787'  -> 10.42.0.1:8787
+curl -s 10.42.0.1:8787/api/health                       # {"status":"ok"} -> it's up
+curl -s 10.42.0.1:8787/api/ids | python3 -m json.tool
 #   -> events with "node":"10.42.0.2" (vega), correctly decrypted, MERGED with
 #      polaris's own local feed. That round trip = the whole design working.
 ```
 
 View it in the browser the real way (from the Mac):
 ```bash
-ssh -L 8787:127.0.0.1:8787 polaris      # then open http://127.0.0.1:8787
+ssh -L 8787:10.42.0.1:8787 polaris      # then open http://127.0.0.1:8787 on the Mac
 ```
 
 ---
