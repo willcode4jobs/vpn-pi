@@ -1,57 +1,47 @@
-"""Fail2banSource checks — parse fail2ban-client output; degrade to empty.
+"""Fail2banSource checks — current jail state derived from the fail2ban journal.
 
-Injected runner, no live fail2ban. Locks the parse of the jail list and a jail's
-banned-IP list, and the empty-on-failure contract the API relies on.
+No sudo, no live fail2ban: the journalctl runner is injected and returns canned
+ban/unban json-lines. Locks the Ban−Unban replay (last action wins), the
+multi-jail split, and the empty-on-failure contract.
 """
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from app.sources.fail2ban import Fail2banSource
 
-_STATUS = "Status\n|- Number of jail:\t1\n`- Jail list:\tsshd\n"
-_SSHD = (
-    "Status for the jail: sshd\n"
-    "|- Filter\n|  |- Currently failed:\t2\n|  |- Total failed:\t10\n"
-    "`- Actions\n   |- Currently banned:\t2\n   |- Total banned:\t3\n"
-    "   `- Banned IP list:\t203.0.113.77 1.2.3.4\n"
+
+def _rec(message: str, ts_us: int) -> str:
+    return json.dumps({"__REALTIME_TIMESTAMP": str(ts_us), "MESSAGE": message})
+
+
+# chronological: .77 banned; .4 banned then unbanned; recidive bans 9.9.9.9
+_JOURNAL = "\n".join(
+    [
+        _rec("Started fail2ban.service - Fail2Ban Service.", 500),  # noise, ignored
+        _rec("fail2ban.actions: NOTICE [sshd] Ban 203.0.113.77", 1000),
+        _rec("fail2ban.actions: NOTICE [sshd] Ban 1.2.3.4", 2000),
+        _rec("fail2ban.actions: NOTICE [sshd] Unban 1.2.3.4", 3000),
+        _rec("fail2ban.actions: NOTICE [recidive] Ban 9.9.9.9", 4000),
+    ]
 )
 
 
-def _runner(args: list[str]) -> str:
-    if args == ["status"]:
-        return _STATUS
-    if args == ["status", "sshd"]:
-        return _SSHD
-    return ""
-
-
 class TestFail2banSource(unittest.TestCase):
-    def test_parses_jail_and_banned_ips(self) -> None:
-        jails = Fail2banSource(runner=_runner).jails()
-        self.assertEqual(len(jails), 1)
-        j = jails[0]
-        self.assertEqual(j.jail, "sshd")
-        self.assertEqual(j.currently_banned, 2)
-        self.assertEqual(j.total_banned, 3)
-        self.assertEqual(j.banned_ips, ["203.0.113.77", "1.2.3.4"])
+    def test_current_state_from_ban_minus_unban(self) -> None:
+        jails = {j.jail: j for j in Fail2banSource(runner=lambda: _JOURNAL).jails()}
+        self.assertEqual(set(jails), {"sshd", "recidive"})
+        sshd = jails["sshd"]
+        self.assertEqual(sshd.banned_ips, ["203.0.113.77"])  # .4 was unbanned
+        self.assertEqual(sshd.currently_banned, 1)
+        self.assertEqual(sshd.total_banned, 2)  # two Ban events in the window
+        self.assertEqual(jails["recidive"].banned_ips, ["9.9.9.9"])
 
     def test_degrades_to_empty_on_failure(self) -> None:
-        # no fail2ban / no sudoers → runner returns "" → empty list, not an error
-        self.assertEqual(Fail2banSource(runner=lambda args: "").jails(), [])
-
-    def test_jail_with_no_bans(self) -> None:
-        clear = _SSHD.replace("Currently banned:\t2", "Currently banned:\t0").replace(
-            "Banned IP list:\t203.0.113.77 1.2.3.4", "Banned IP list:\t"
-        )
-
-        def runner(args: list[str]) -> str:
-            return _STATUS if args == ["status"] else clear
-
-        j = Fail2banSource(runner=runner).jails()[0]
-        self.assertEqual(j.currently_banned, 0)
-        self.assertEqual(j.banned_ips, [])
+        # no fail2ban / journal unreadable → runner returns "" → empty list
+        self.assertEqual(Fail2banSource(runner=lambda: "").jails(), [])
 
 
 if __name__ == "__main__":
