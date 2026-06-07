@@ -45,66 +45,66 @@ export function IdsFeed({ poll }: { poll: Poll<IdsEvent[]> }) {
           const shown = showAll ? rows : rows.slice(0, COLLAPSED);
           return (
             <>
-          <div className={showAll ? "feed feed-scroll" : "feed"}>
-            <table className="readout ids">
-              <thead>
-                <tr>
-                  <th className="col-rail" />
-                  <th>TIME</th>
-                  <th>SEV</th>
-                  <th>NODE</th>
-                  <th>SOURCE</th>
-                  <th>SUBJECT</th>
-                  <th>EVENT</th>
-                </tr>
-              </thead>
-              <tbody>
-                {shown.map((e) => {
-                  const open = openId === e.id;
-                  return (
-                    <Fragment key={e.id}>
-                      <tr
-                        className={`row sev-${e.severity}${open ? " open" : ""}`}
-                        onClick={() => setOpenId(open ? null : e.id)}
-                        aria-expanded={open}
-                      >
-                        <td className="col-rail" />
-                        <td className="num dim">{clock(e.at)}</td>
-                        <td className={`state-label v-${e.severity}`}>
-                          {SEV_LABEL[e.severity]}
-                        </td>
-                        <td className="peer-name">{e.node ?? "—"}</td>
-                        <td className="src-tag">{e.source}</td>
-                        <td className="peer-name">{e.subject}</td>
-                        <td className="evt-cell">
-                          <span className="evt-msg">{e.message}</span>
-                          <span className="evt-caret">{open ? "▾" : "▸"}</span>
-                        </td>
-                      </tr>
-                      {open && (
-                        <tr className={`detail sev-${e.severity}`}>
-                          <td className="col-rail" />
-                          <td colSpan={6}>
-                            <div className="detail-box">{e.message}</div>
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+              <div className={showAll ? "feed feed-scroll" : "feed"}>
+                <table className="readout ids">
+                  <thead>
+                    <tr>
+                      <th className="col-rail" />
+                      <th>TIME</th>
+                      <th>SEV</th>
+                      <th>NODE</th>
+                      <th>SOURCE</th>
+                      <th>SUBJECT</th>
+                      <th>EVENT</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {shown.map((e) => {
+                      const open = openId === e.id;
+                      return (
+                        <Fragment key={e.id}>
+                          <tr
+                            className={`row sev-${e.severity}${open ? " open" : ""}`}
+                            onClick={() => setOpenId(open ? null : e.id)}
+                            aria-expanded={open}
+                          >
+                            <td className="col-rail" />
+                            <td className="num dim">{clock(e.at)}</td>
+                            <td className={`state-label v-${e.severity}`}>
+                              {SEV_LABEL[e.severity]}
+                            </td>
+                            <td className="peer-name">{e.node ?? "—"}</td>
+                            <td className="src-tag">{e.source}</td>
+                            <td className="peer-name">{e.subject}</td>
+                            <td className="evt-cell">
+                              <span className="evt-msg">{e.message}</span>
+                              <span className="evt-caret">{open ? "▾" : "▸"}</span>
+                            </td>
+                          </tr>
+                          {open && (
+                            <tr className={`detail sev-${e.severity}`}>
+                              <td className="col-rail" />
+                              <td colSpan={6}>
+                                <div className="detail-box">{e.message}</div>
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
 
-          {rows.length > COLLAPSED && (
-            <button
-              className="feed-more"
-              onClick={() => setShowAll((v) => !v)}
-              aria-expanded={showAll}
-            >
-              {showAll ? "▴ SHOW LESS" : `▾ SHOW ALL (${rows.length})`}
-            </button>
-          )}
+              {rows.length > COLLAPSED && (
+                <button
+                  className="feed-more"
+                  onClick={() => setShowAll((v) => !v)}
+                  aria-expanded={showAll}
+                >
+                  {showAll ? "▴ SHOW LESS" : `▾ SHOW ALL (${rows.length})`}
+                </button>
+              )}
             </>
           );
         }}
