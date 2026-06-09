@@ -12,8 +12,16 @@ prototype/configs/**/current.*
 *~
 .*.swp
 .DS_Store
+._*
 node_modules/
 *.log
 
 # Compiled daemon binaries — built in the vpn-pi-daemon repo, not tracked here
 /daemon/
+# Editor / IDE
+.vscode/
+.idea/
+
+# Go build / test artifacts (built binaries live under */dist/, ignored locally)
+*.test
+coverage.out

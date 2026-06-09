@@ -1,13 +1,14 @@
-# Raspberry Pi VPN Exit Node
+The goal of this project has shifted significantly from the original scope.
 
-The goal of this project is to build an exit node on a Raspberry Pi.
-This exit node is for a VPN I will be building, with the help of Claude Code.
-Most of what informs this project comes from Claude, different coding agents, and the internet at large.
+We first began with the idea of building an exit node on a Raspberry Pi- a vpn of sorts. The issue with this original plan was, it was simply too basic. This plan then proceded to evolve:
 
-RIGHT NOW: I am in Phase 1.
+VPN --> Mesh w/ single exit node --> Mesh w/ single exit node and gui --> Mesh w/ configurable exit nodes and gui --> Island internet.
 
-Sources will be detailed in each weekly report you can find with the corresponding Canvas link.
-These documents include everything, from builds, to errors and new phases; all new work is documented in them.
+The read me, has never actually been updated. The reason why, is because I simply never thought about it. Because of this, artifacts are in documented pull requests mainly.
+  -Git documentation is a growing skill for me.
 
-Git workflow and conventions are outlined in /docs.# polaris write test
-# polaris write test
+Anyways, the most recent scope change has been the delegation of an island internet. The issue here, of course, is that there's no longer a need for an ingress/egress point. The lack of this point means that many things, like the masquerade table, forwarding table, dns resolution. It's all somewhat gone. In fact, I have to rip much of the completed artifacts out of main.
+
+Speaking of main, there are now three main branches. 1 for polaris, 1 for vega, and 1 for uniform development. Each node needs its own stuff, so specialty branches made the most sense for version control.
+
+I need to update the scope files still.
