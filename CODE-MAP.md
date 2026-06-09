@@ -13,7 +13,8 @@ gui/
   backend/   FastAPI app — file-share API + host-security IDS feed + blind-relay alert mesh
   frontend/  React + Vite ops-console UI (file sharing + per-node IDS, master aggregate view)
   deploy/    build/ship script, systemd unit, key-generation, runbooks
-pi-deployment/   node hardening + firewall scripts, WireGuard config templates (stubs)
+pi-deployment/   node hardening + firewall scripts
+docs/wg-templates/   WireGuard hub/spoke config templates + topology walkthrough
 archive/phase2-vpn-exit-node/   superseded single-exit-node prototype (hardening + configs)
 ```
 
@@ -216,14 +217,25 @@ The baseline hardening bootstrap for every mesh node (idempotent). Installs nfta
 ### pi-deployment/open-gui-port.sh
 Follow-on script that opens tcp/8787 in nftables, scoped to 10.42.0.0/24 (wg subnet). Creates `nft-gui-port.service` (systemd oneshot) to re-assert the rule on boot after nftables loads, and an idempotent apply helper that survives `harden-base.sh` reruns (which flush the rule). The firewall source scope is the only access control until app-level auth lands.
 
-### pi-deployment/wg-templates/control-plane.conf.tmpl
-**Empty stub (0 bytes)** — intended control-plane WireGuard tunnel template, not yet populated.
+> WireGuard templates moved out of `pi-deployment/` to `docs/wg-templates/` — they're illustrative reference, not run by any script. See the next section.
 
-### pi-deployment/wg-templates/data-plane.conf.tmpl
-**Empty stub (0 bytes)** — intended data-plane WireGuard tunnel template, not yet populated.
+---
 
-### pi-deployment/wg-templates/mesh-p2p.conf.tmpl
-**Empty stub (0 bytes)** — intended mesh peer-to-peer WireGuard tunnel template, not yet populated.
+## WireGuard config templates — `docs/wg-templates/`
+
+Reference `wg0.conf` configs for the hub-and-spoke island, dual-stack (IPv4 `10.42.0.0/24` + IPv6 ULA `fd49:2977:3d2f::/64`). Keys are `KEY`/`<placeholder>` — generated on-host, never committed (`.gitignore` blocks real `*.conf`/private keys). Replaced the original empty `control-plane`/`data-plane`/`mesh-p2p` `.conf.tmpl` stubs (a full-mesh framing that didn't match the hub-and-spoke reality).
+
+### docs/wg-templates/wireguard-topology.md
+The annotated walkthrough: ASCII topology, the key-distribution table (hub knows every spoke's pubkey; each spoke knows only vega's), and why polaris (master) is a spoke not the hub. The teaching doc behind the two templates.
+
+### docs/wg-templates/hub-wireguard.md
+vega's config — dual-stack `[Interface]`, `PostUp = nft -f /etc/wireguard/mesh.nft` (rules in a separate nft file), and one `[Peer]` per node: polaris (static LAN endpoint `192.168.1.72`), cellphone (.3), altair (.4), sirius (.5), builder (.6).
+
+### docs/wg-templates/spoke-wireguard.md
+A spoke's config (polaris's side shown) — dual-stack `[Interface]` and a single `[Peer]` for vega (LAN endpoint `192.168.1.73` + `PersistentKeepalive=25`).
+
+### docs/wg-templates/wireguardREADME.md
+Short rationale note (William's voice) on hub-and-spoke vs peer-to-peer — tighter security at the cost of modularity, and the "if I could do it again, p2p" reflection.
 
 ---
 

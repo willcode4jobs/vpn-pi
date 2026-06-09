@@ -1,0 +1,3 @@
+The mesh architecture is a hub and spoke. This means all devices connect to a central nexus (hub) and communicate via proxy to other nodes. This makes security tighter, but it also makes modifications more difficult. Peer to peer is more open, which allows for more modularity, but there's also more possibility for manipulation by a bad actor. 
+
+If I could do it all again, I would go the peer-to-peer route. 
