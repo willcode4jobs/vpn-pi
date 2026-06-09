@@ -4,8 +4,7 @@ Takes the operator from **`feat/ids-mesh` committed on the Mac** to the **full I
 GUI live** — blind-relay mesh, brute-force/fail2ban feed, JAILS panel, and the
 view-password — on **vega** (hub + sensor + relay) and **polaris** (master), with
 the path for endpoints. This is the orchestration layer; deep per-node detail
-lives in [`RUNBOOK-ids-nodes.md`](RUNBOOK-ids-nodes.md), the first-spine proof in
-[`RUNBOOK-ids-live-test.md`](RUNBOOK-ids-live-test.md), design in
+lives in [`RUNBOOK-ids-nodes.md`](RUNBOOK-ids-nodes.md), design in
 [`../../docs/ids-planning/`](../../docs/ids-planning/).
 
 ## The rule that bites: two deploy channels

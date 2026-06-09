@@ -2,7 +2,7 @@
 
 How to set up a node for the blind-relay IDS layer: a real local sensor feed,
 plus (per role) the shipper, the hub relay, or the master aggregator. Builds on
-the file-share deploy (`RUNBOOK.md`, `RUNBOOK-sirius.md`) — only the IDS-specific
+the file-share deploy (`RUNBOOK-sirius.md`) — only the IDS-specific
 pieces are here. Design: `docs/ids-planning/` (README + 01–05). Implementation
 status: `docs/ids-planning/BUILD-STATUS.md`.
 

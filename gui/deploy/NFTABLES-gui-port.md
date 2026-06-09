@@ -173,7 +173,7 @@ curl -s --max-time 6 http://<polaris-island-addr>:8787/api/health   # {"status":
 
 A hang/timeout from the node means either the rule didn't match (wrong source IP /
 interface) or the service is still bound to `127.0.0.1` (see the bind step in
-`RUNBOOK.md` §9 / `RUNBOOK-sirius.md` §7).
+`RUNBOOK-sirius.md` §7).
 
 ---
 
