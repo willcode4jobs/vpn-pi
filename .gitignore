@@ -26,6 +26,9 @@ node_modules/
 *.test
 coverage.out
 
+# Agent context — kept on disk for the coding agent, not part of the submission
+/CLAUDE.md
+
 # LLM briefs / agent scratch — kept on disk for reference, never committed
 **/llm-*.md
 
