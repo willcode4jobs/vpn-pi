@@ -65,7 +65,7 @@ fits with no hardening change.
 ## 4. Journal read permission (do NOT run as root)
 
 `HostDataSource` shells to `journalctl`. The service runs as an unprivileged user
-(`billy`, or `brichardt` on sirius). Grant journal read by group, not root:
+(`billy`, or `siriususer` on sirius). Grant journal read by group, not root:
 
 ```
 sudo usermod -aG systemd-journal <service-user>
@@ -80,7 +80,7 @@ Keep `NoNewPrivileges=true` and the existing `ProtectSystem=strict`.
 This is the honest part. The multi-node story needs **a backend actually running
 on each endpoint**, and that is partly blocked:
 
-- **sirius (x86, `brichardt`, SELinux enforcing).** SELinux blocks executing a
+- **sirius (x86, `siriususer`, SELinux enforcing).** SELinux blocks executing a
   venv under `/home` (`203/EXEC`). The fix — deploy out of the home into a system
   path (e.g. `/opt`) — is documented in `RUNBOOK-sirius.md` but **not yet done**.
   This must be solved before sirius can ship alerts. Budget real time for it.

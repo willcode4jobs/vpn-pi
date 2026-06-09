@@ -14,7 +14,7 @@ ship **binaries** to the nodes (no git/Go/compiler on nodes). Source of truth fo
 | Node    | Arch    | `GOARCH` | Role    | Notes                         |
 |---------|---------|----------|---------|-------------------------------|
 | vega    | aarch64 | `arm64`  | `relay` | hub/bastion — never bounces   |
-| sirius  | x86_64  | `amd64`  | `spoke` | "thebigun"                    |
+| sirius  | x86_64  | `amd64`  | `spoke` | "<hostname>"                    |
 | altair  | aarch64 | `arm64`  | `spoke` | endpoint; reached via passkey |
 
 Role drives remediation aggressiveness — see `DAEMON-CONTEXT.md`.

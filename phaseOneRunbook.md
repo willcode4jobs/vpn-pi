@@ -67,14 +67,3 @@ it's fully demonstrable on a laptop with nothing else deployed.
 | `docs/` (runbooks) | *(procedures)* | — | how every node is stood up + recovered |
 
 **Code entry point:** [`CODE-MAP.md`](CODE-MAP.md) — every source file + a runbook index.
-
----
-
-## Submission checklist
-
-- [x] "How this meets each requirement" note (the buckets above)
-- [x] Quickstart that runs on a fresh machine (GUI dev mode + `go test`)
-- [x] Repo map — one line each (in `README.md` / `CODE-MAP.md`)
-- [x] Per-folder run/deploy notes (table above)
-- [ ] Over-comment the configs — they're the bulk and can't be "run," so the comments carry requirement #4
-- [ ] Actually clone onto a clean machine and run the quickstart yourself — that *is* requirement #1's test
