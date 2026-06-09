@@ -1,0 +1,43 @@
+# SU495 island GUI — polaris (the SQLite file authority).
+# Install: see gui/deploy/RUNBOOK.md. Runs the FastAPI backend with GUI_FILES=sqlite.
+#
+# Bind is LOOPBACK-ONLY by default. The upload/delete API is unauthenticated, so
+# do NOT switch --host to the wg0 address until auth lands (RUNBOOK §9). While
+# loopback-only, reach the UI with an SSH local-forward from the Mac.
+#
+# Production run path: uvicorn directly (no --reload; that's a dev-only convenience
+# in app.main:main()).
+
+[Unit]
+Description=SU495 island GUI (polaris, SQLite file authority)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=billy
+Group=billy
+WorkingDirectory=/home/billy/projects/vpn-pi/gui/backend
+
+Environment=GUI_FILES=sqlite
+Environment=GUI_DB_PATH=/var/lib/vpn-pi/island.db
+Environment=GUI_NODE_NAME=polaris
+Environment=GUI_NODE_ROLE=relay
+Environment=GUI_PORT=8787
+
+# Loopback only. To expose on the island LATER (after auth): change 127.0.0.1 to
+# the wg0 address and open the port on wg0 in nftables (RUNBOOK §9).
+ExecStart=/home/billy/projects/vpn-pi/gui/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8787
+
+Restart=on-failure
+RestartSec=2
+
+# Hardening — the GUI is an unprivileged reader/writer of one DB dir.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/vpn-pi
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

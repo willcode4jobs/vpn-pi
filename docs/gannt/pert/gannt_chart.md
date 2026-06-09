@@ -16,11 +16,11 @@ gantt
     B  Architecture v5 redo          :active, kb, 2026-06-12, 1d
     C  Mesh relay core (CLI proven)  :done,   kc, 2026-06-12, 1d
     D  Node fleet (node 1 up)        :active, kd, 2026-06-12, 1d
-    E  App (any-node host)           :        ke, 2026-06-12, 1d
-    F  FTP file sharing              :        kf, 2026-06-12, 1d
+    E  App (any-node host)           :done,   ke, 2026-06-12, 1d
+    F  FTP file sharing              :active, kf, 2026-06-12, 1d
     G  Deployment automation (D3)    :        kg, 2026-06-12, 1d
     H  Self-heal daemon (Go)         :active, kh, 2026-06-12, 1d
-    I  IDS (telemetry)               :        ki, 2026-06-12, 1d
+    I  IDS (telemetry)               :done,   ki, 2026-06-12, 1d
     J  Production hardening          :        kj, 2026-06-12, 1d
     K  Buffer                        :        kk, 2026-06-12, 1d
     L  Final package + demo          :        kl, 2026-06-12, 1d
@@ -34,13 +34,13 @@ gantt
     D :active, d, after c, 10d
 
     section Automation cluster
-    E :e, after d, 14d
-    F :f, after d, 7d
+    E :done,   e, after d, 14d
+    F :active, f, after d, 7d
     G :g, after d, 10d
     H :active, h, after c, 18d
 
     section Security & wrap-up
-    I :i, after e f g, 10d
+    I :done, i, after e f g, 10d
     J :j, after i h, 7d
     K :k, after j, 7d
     L :l, after k, 4d
