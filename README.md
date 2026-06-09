@@ -106,4 +106,4 @@ In-tree but not part of this submission: the **wg-selfheal daemon** ([`daemon/`]
 auto re-asserts unhealthy tunnels) and the island-internet cleanup (removing leftover
 exit-node NAT/forwarding now that there's no egress point).
 
-Repo conventions: [`CLAUDE.md`](CLAUDE.md), [`docs/gitpractice.md`](docs/gitpractice.md).
+Repo conventions: [`docs/gitpractice.md`](docs/gitpractice.md).
