@@ -25,3 +25,9 @@ node_modules/
 # Go build / test artifacts (built binaries live under */dist/, ignored locally)
 *.test
 coverage.out
+
+# LLM briefs / agent scratch — kept on disk for reference, never committed
+**/llm-*.md
+
+# macOS / cloud-sync conflict copies (e.g. "main 2.py")
+* [0-9].*
