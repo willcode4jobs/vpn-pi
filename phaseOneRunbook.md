@@ -27,7 +27,7 @@ Brings the GUI up in dev mode and runs the tests on a clean clone — the "runs 
 separate machine" proof.
 
 ```bash
-git clone git@github.com:willcode4jobs/vpn-pi.git
+git clone https://github.com/willcode4jobs/vpn-pi.git   # HTTPS: no SSH key needed (public repo)
 cd vpn-pi
 
 # 1. backend — FastAPI on loopback :8787  (Python 3.10+)
