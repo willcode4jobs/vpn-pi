@@ -170,18 +170,6 @@ First-run notes (polaris, 2026-05-14):
 
 ---
 
-## William's preferences
-
-- Wants pushback, not validation
-- Wants honest hour estimates, no padding
-- Wants engineering judgment, not corporate hedging
-- Does NOT want unsolicited sleep/rest advice. If directly asked, advise honestly; otherwise stay out.
-- Does NOT want copy-paste answers in deliverables — wants help structuring his own voice
-- Casual tone fine; cursing sparingly OK
-- Direct corrections welcome
-
----
-
 ## Open items
 
 - Architecture pivot verifications (CGNAT, office UDP, endpoint definitions)
