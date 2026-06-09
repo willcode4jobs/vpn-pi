@@ -168,17 +168,6 @@ First-run notes (polaris, 2026-05-14):
 - **`/tmp/` clears on reboot** — never put logs there if you might want them after a kernel update reboot.
 - **mDNS (`*.local`) breaks under the hardening firewall.** The nftables baseline drops inbound UDP/5353, so the Pi never answers mDNS queries even though `avahi-daemon` is still running and listening. Symptom: `ssh polaris.local` hangs with no client output and no entry in the Pi's `journalctl -u ssh`. Fix: connect by IP and pin the Pi to a known address via DHCP reservation on the router (not static-on-Pi). Don't poke a hole for 5353 unless mDNS is actually needed — IP + reservation is the more secure default.
 
----
-
-## William's preferences
-
-- Wants pushback, not validation
-- Wants honest hour estimates, no padding
-- Wants engineering judgment, not corporate hedging
-- Does NOT want unsolicited sleep/rest advice. If directly asked, advise honestly; otherwise stay out.
-- Does NOT want copy-paste answers in deliverables — wants help structuring his own voice
-- Casual tone fine; cursing sparingly OK
-- Direct corrections welcome
 
 ---
 
