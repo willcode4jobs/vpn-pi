@@ -25,3 +25,12 @@ node_modules/
 # Go build / test artifacts (built binaries live under */dist/, ignored locally)
 *.test
 coverage.out
+
+# Agent context — kept on disk for the coding agent, not part of the submission
+/CLAUDE.md
+
+# LLM briefs / agent scratch — kept on disk for reference, never committed
+**/llm-*.md
+
+# macOS / cloud-sync conflict copies (e.g. "main 2.py")
+* [0-9].*

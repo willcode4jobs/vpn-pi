@@ -6,7 +6,7 @@ hub. The wall is **SELinux blocking uvicorn** — solved in §3. Self-contained;
 only off-box steps are the frontend bundle (§7) and pushing the branch.
 
 **sirius facts** (correct if wrong): x86 **Linux, SELinux enforcing**; user
-`brichardt`, hostname `thebigun` (island identity is `GUI_NODE_NAME=sirius`);
+`siriususer`, hostname `<hostname>` (island identity is `GUI_NODE_NAME=sirius`);
 Python 3.14 (use 3.12 — §2); has a local browser → views its UI at
 `http://127.0.0.1:8787`; wg0 `10.42.0.5`; hub = vega `10.42.0.2`.
 
@@ -20,14 +20,14 @@ Python 3.14 (use 3.12 — §2); has a local browser → views its UI at
 ## 1. Code → `/opt` (NOT `/home` — this *is* the SELinux fix)
 ```bash
 sudo dnf install -y git-core
-sudo mkdir -p /opt/vpn-pi && sudo chown -R brichardt:brichardt /opt/vpn-pi
+sudo mkdir -p /opt/vpn-pi && sudo chown -R siriususer:siriususer /opt/vpn-pi
 ```
 
 ### 1a. Deploy key (read-only — sirius pulls; pushes stay on the Mac)
 Generate a passphrase-less keypair **on sirius**, register the public half as a
 read-only deploy key on the repo, and pin it for `github.com`:
 ```bash
-# on sirius, as brichardt
+# on sirius, as siriususer
 ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_github -N "" -C "sirius-deploy"
 cat ~/.ssh/id_ed25519_github.pub        # copy this line
 ```
@@ -117,8 +117,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=brichardt
-Group=brichardt
+User=siriususer
+Group=siriususer
 WorkingDirectory=/opt/vpn-pi/gui/backend
 
 # files: forward to the hub (no local DB)
@@ -154,12 +154,12 @@ systemctl status su495-gui.service --no-pager     # active, NO 203/EXEC
 
 ## 5. Sensor prerequisites
 ```bash
-sudo usermod -aG systemd-journal brichardt        # IDS + fail2ban read the journal
+sudo usermod -aG systemd-journal siriususer        # IDS + fail2ban read the journal
 # fail2ban must log to the JOURNAL (else bans never reach the GUI):
 printf '[Definition]\nlogtarget = SYSTEMD-JOURNAL\n' | sudo tee /etc/fail2ban/fail2ban.local >/dev/null
 sudo systemctl restart fail2ban
 # keys (you generate): node key here; copy polaris's master.pub; register sirius's verify key on polaris
-sudo mkdir -p /var/lib/vpn-pi/ids && sudo chown brichardt:brichardt /var/lib/vpn-pi/ids
+sudo mkdir -p /var/lib/vpn-pi/ids && sudo chown siriususer:siriususer /var/lib/vpn-pi/ids
 cd /opt/vpn-pi/gui/backend && ./.venv/bin/python ../deploy/ids-keygen.py node --out /var/lib/vpn-pi/ids
 #   -> on polaris registry: 10.42.0.5=<sirius verify key>
 sudo systemctl restart su495-gui.service          # pick up the journal group + keys
@@ -204,7 +204,7 @@ sudo fail2ban-client set sshd unbanip 203.0.113.99
 | starts, then AVC in journal | residual denial → `ausearch -m AVC \| audit2why`; `audit2allow -M` + `semodule -i` (§3c) |
 | binds but shipper can't reach hub | `name_connect` to 8787 denied → §3b port label + §3c; or wg down (§6) |
 | `/` 404s, `/api/*` works | bundle not at `/opt/…/static` → §7 |
-| no IDS events at all | `brichardt` not in `systemd-journal`, or no restart after `usermod` → §5 |
+| no IDS events at all | `siriususer` not in `systemd-journal`, or no restart after `usermod` → §5 |
 | bans missing but `fail2ban-client status` shows them | fail2ban logging to a file → `logtarget = SYSTEMD-JOURNAL` (§5) |
 | `pip` compiles pydantic-core / cargo error | no cp314 wheel → 3.12 venv (§2) |
 

@@ -27,6 +27,51 @@ Course project (SU495). Built with heavy use of Claude / coding agents.
 
 ---
 
+## Run it (quickstart — any machine, no nodes needed)
+
+The GUI runs against a built-in **mock store + synthetic IDS feed** when nothing is
+deployed, so it's fully demonstrable on a laptop with only Python + Node installed.
+
+```bash
+git clone https://github.com/willcode4jobs/vpn-pi.git
+cd vpn-pi
+
+# backend — FastAPI on http://127.0.0.1:8787   (needs Python 3.10+)
+cd gui/backend
+python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+./.venv/bin/python -m app.main
+
+# frontend — Vite dev server in a SECOND terminal (proxies /api -> backend)
+cd gui/frontend
+npm install && npm run dev        # then open the URL it prints (127.0.0.1:5173)
+```
+
+Run the tests:
+
+```bash
+cd gui/backend && ./.venv/bin/python -m unittest discover -s tests   # backend (Python)
+cd daemon && go test ./...                                           # daemon (Go)
+```
+
+Full deploy steps + per-folder run notes: [`phaseOneRunbook.md`](phaseOneRunbook.md).
+
+---
+
+## Where things are
+
+| Path | What's there |
+|---|---|
+| [`gui/backend/`](gui/backend/) | FastAPI backend — file-share + IDS APIs (`app/`), unit tests (`tests/`) |
+| [`gui/frontend/`](gui/frontend/) | React + Vite ops-console UI (`src/`) |
+| [`gui/deploy/`](gui/deploy/) | GUI deploy — systemd unit, push script, key-gen, runbooks |
+| [`pi-deployment/`](pi-deployment/) | node hardening + firewall scripts |
+| [`docs/`](docs/) | planning, runbooks, flowcharts, `wg-templates/` (mesh configs) |
+| [`daemon/`](daemon/) | wg-selfheal Go daemon (later phase) |
+| [`archive/`](archive/) | superseded phase-2 prototype |
+| [`CODE-MAP.md`](CODE-MAP.md) | per-file description of the whole codebase |
+
+---
+
 ## Topology — hub and spoke
 
 Every node holds a WireGuard tunnel to **one hub**; the hub relays traffic between

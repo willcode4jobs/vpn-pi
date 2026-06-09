@@ -57,7 +57,7 @@ Python has no matching wheel — rebuild with `python3.12` and reinstall.
   ```bash
   sudo mkdir -p /opt/vpn-pi
   sudo rsync -a --delete ~/projects/vpn-pi/ /opt/vpn-pi/   # or clone there
-  sudo chown -R brichardt:brichardt /opt/vpn-pi
+  sudo chown -R siriususer:siriususer /opt/vpn-pi
   # rebuild the venv IN PLACE under /opt (venvs hardcode their path)
   cd /opt/vpn-pi/gui/backend && python3.12 -m venv .venv && \
     ./.venv/bin/pip install -r requirements.txt
@@ -71,7 +71,7 @@ Python has no matching wheel — rebuild with `python3.12` and reinstall.
 journal read by **group**, never root:
 
 ```bash
-sudo usermod -aG systemd-journal <service-user>   # billy / brichardt
+sudo usermod -aG systemd-journal <service-user>   # billy / siriususer
 # re-login or restart the service so the new group takes effect
 journalctl -n1 >/dev/null && echo "journal readable"   # as the service user
 ```

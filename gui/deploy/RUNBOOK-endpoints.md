@@ -37,7 +37,7 @@ Run the **sensor** path of [`RUNBOOK-onboard.md`](RUNBOOK-onboard.md): code +
 register *its* verify key on polaris as `10.42.0.5=…`), and the env block
 (`GUI_IDS=host`, `GUI_NODE_NAME=sirius`, node key, master pubkey,
 `GUI_IDS_RELAY_URL=http://10.42.0.2:8787`, `GUI_IDS_NODE_ADDR=10.42.0.5`). User is
-`brichardt` — set the unit's `User=`/`WorkingDirectory=` to match.
+`siriususer` — set the unit's `User=`/`WorkingDirectory=` to match.
 
 ## A2. SELinux
 SELinux blocks a service exec'ing a venv under `/home` (`203/EXEC`). Per
