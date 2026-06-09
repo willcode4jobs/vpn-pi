@@ -13,21 +13,21 @@ Endpoint = 192.168.1.72:port
 AllowedIPs = 10.42.0.1/32, fd49:2977:3d2f::1/128
 
 [Peer]
-# Cellphone
+#Cellphone
 PublicKey = KEY
 AllowedIPs = 10.42.0.3/32, fd49:2977:3d2f::3/128
 
 [Peer]
-# altair
+#altair
 PublicKey = KEY
 AllowedIPs = 10.42.0.4/32, fd49:2977:3d2f::4/128
 
 [Peer]
-# sirius
+#sirius
 PublicKey = KEY
 AllowedIPs = 10.42.0.5/32, fd49:2977:3d2f::5/128
 
 [Peer]
-# builder
+#builder
 PublicKey = KEY
 AllowedIPs = 10.42.0.6/32, fd49:2977:3d2f::6/128
