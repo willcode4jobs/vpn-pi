@@ -1,77 +1,99 @@
-# CLAUDE.md — SU495 VPN Project
+# CLAUDE.md — SU495 island-internet mesh
 
-## What's being built
-WireGuard mesh VPN with IDS-style attack detection. 5-node mesh: master + access/exit + 3 endpoints. Multi-site deployment. Master admin via SSH/CLI (web UI was cut).
+Context + conventions for the coding agent. Project summary lives in `README.md`;
+per-file code map in `CODE-MAP.md`.
 
-## Architecture (current state, partially in flux)
-- WireGuard (kernel-space) chosen over OpenVPN
-- Full mesh: every node has direct WG tunnels to every other node
-- Control plane is bidirectional (master ↔ all nodes for configs, logs, IDS alerts)
-- Master is co-located with access/exit, NOT in the data path — sees only control traffic, no user payload
-- IDS scope: network + tunnel level only, no application-layer
-- Outbound data flow: endpoint → home router → internet (encrypted) → site router → access/exit Pi (decrypt + NAT) → site router → internet (cleartext) → destination
-- Inbound data flow: external client → internet (encrypted) → site router → access/exit Pi (decrypt + re-encrypt for next tunnel) → destination endpoint. Two-stage encryption because home endpoints have no public IP and can't peer directly with external clients.
+## What this is
+A WireGuard mesh "island internet" with IDS-style attack detection. Hub-and-spoke:
+one hub (vega) + a master (polaris) + endpoint sensors/viewers. The mesh hosts its
+own services rather than tunneling to the outside — the first of those services is
+the per-node **IDS GUI**. Admin is over SSH/CLI.
 
-## Architecture pivot IN PROGRESS (not yet committed)
-Original: business = public-facing, home = endpoints. Pivoting to: home = public-facing, business = endpoints.
+## Status — Phase One (current)
+- **Done:** node hardening (`harden-base.sh` on polaris + vega), the hub-and-spoke
+  WireGuard design (dual-stack templates in `docs/wg-templates/`), and the IDS GUI
+  (FastAPI backend + React frontend: wg0-bound file share + blind-relay IDS feed).
+- **In progress:** sirius endpoint sensor deploy (x86 / SELinux), IPv6 rollout across
+  the live configs, trimming leftover exit-node plumbing now that there's no egress point.
+- **Later phases:** the `wg-selfheal` daemon (`daemon/`) and the rest of the
+  island-internet cleanup.
 
-Trigger: office firewall is heavy-duty; inbound port forwarding from office not practical.
+## Architecture
+- **WireGuard** (kernel-space, chosen over OpenVPN).
+- **Hub-and-spoke.** Every node holds a tunnel to **one hub (vega)**; the hub relays
+  traffic between spokes. No direct spoke-to-spoke tunnels.
+- **vega = hub** — access/exit edge, the island **file authority** (SQLite
+  `island.db`), and the **IDS relay**. The only public-facing node (home DDNS, UDP
+  51820).
+- **polaris = master** — control plane, and a **spoke on purpose**: a WireGuard hub
+  decrypts everything it relays, so the master must *not* be the hub. Keeping polaris
+  a spoke keeps it out of the data path (it sees control traffic only).
+- **Dual-stack** — IPv4 `10.42.0.0/24` + IPv6 ULA `fd49:2977:3d2f::/64`, hosts
+  numbered so `::N` matches `10.42.0.N`.
+- **IDS scope:** network + tunnel level only, no application-layer. **Blind-relay
+  alerts:** each node *sign-then-seals* an alert (Ed25519 sign, X25519 seal to the
+  master), ships the opaque blob to the hub's relay buffer, and only the master
+  decrypts + verifies + aggregates. The hub never sees plaintext.
 
-Pending verifications:
-- CGNAT at home (whatismyip.com vs home router WAN IP)
-- Office outbound UDP works (test WG handshake from office machine)
-- Endpoint machines/IT policy at office
+## The fleet
+| node | wg0 (v4 / v6) | host | role | state |
+|---|---|---|---|---|
+| **polaris** | 10.42.0.1 / `::1` | `billy@polaris`, Pi 5 8GB | master (control plane), GUI mesh aggregator | set up, hardened |
+| **vega** | 10.42.0.2 / `::2` | `billy@vega` | hub — edge + file authority + IDS relay | set up, hardened, hub live |
+| **sirius** | 10.42.0.5 / `::5` | `brichardt@thebigun`, x86 Linux (SELinux) | endpoint sensor (journald + fail2ban) | deploy in progress |
+| **altair** | 10.42.0.4 / `::4` | old MacBook (macOS) | **viewer only** — no journald/fail2ban, so no sensor | joins via WireGuard.app |
+| **arcturus** / cellphone | 10.42.0.3 / `::3` | TBD | endpoint | not built |
+| **builder** | 10.42.0.6 / `::6` | Mac dev box | dev / push origin | n/a |
 
-If confirmed: threat model shifts (home now public-facing), DDNS required for residential dynamic IP, all flowcharts need site-label swap, exit IP becomes home IP.
-
-## Naming (stars)
-- **polaris** — master ✓ set up, ✓ hardened (harden-base.sh applied)
-- **vega** — edge (access/exit) — ✓ set up, ✓ hardened (harden-base.sh applied; WireGuard installed, no tunnels yet, nftables default-deny)
-- **sirius, altair, arcturus** — endpoints — not yet built
-
-## Polaris current state
-- Pi OS 64-bit on Pi 5 8GB
-- User `billy`, hostname `polaris`
-- Home LAN via Ethernet at `192.168.1.72` (DHCP reservation on the home router, eth0 MAC pinned). mDNS deliberately not used — `polaris.local` resolution is broken by the hardening firewall (see gotchas). Mac's `~/.ssh/config` points `polaris` at the IP directly.
-- SSH key auth only, password auth disabled via `/etc/ssh/sshd_config.d/00-vpn-pi-hardening.conf` drop-in (installed by harden-base.sh — pre-run state on the Pi was actually `PasswordAuthentication=yes` despite Imager intent)
-- VS Code Remote-SSH connected
-- Git installed, repo cloned to `~/projects/vpn-pi/`
-- `harden-base.sh` applied: nftables default-deny baseline (SSH + ICMP only), fail2ban sshd jail, unattended-upgrades for security patches, WireGuard package installed (no tunnels yet)
-
-## Vega current state
-- `harden-base.sh` applied: nftables default-deny baseline, fail2ban sshd jail, unattended-upgrades, WireGuard package installed (no tunnels yet)
-- Home LAN at `192.168.1.73`, static via DHCP reservation on the home router (same mechanism as polaris — not static-on-Pi). mDNS gotcha applies equally; reach by IP.
-- WG port NOT opened in firewall yet (per-node, deferred until tunnels configured)
-- TBD / not yet captured: hardware, hostname/user, SSH config alias on the Mac, VS Code Remote-SSH, repo clone. Fill these in as confirmed.
+### Node specifics
+- **polaris** — Pi OS 64-bit. Home LAN `192.168.1.72` (DHCP reservation, eth0 MAC
+  pinned). SSH key-only (password auth disabled via the `sshd_config.d` drop-in).
+  Repo at `~/projects/vpn-pi/`. Reach by IP — mDNS (`polaris.local`) is dead behind
+  the firewall (see gotchas).
+- **vega** — Home LAN `192.168.1.73` (DHCP reservation, same mechanism). Now the wg
+  hub at `10.42.0.2` and the file authority (`/var/lib/vpn-pi/island.db`). Reach by IP.
+- **sirius** — deploy under `/opt` (not `/home`) and use a **py3.12** venv; SELinux
+  blocks a service exec'ing from `/home` and has no cp314 wheels. See
+  `gui/deploy/RUNBOOK-sirius.md`.
 
 ## Repo structure
 ```
-~/projects/vpn-pi/
-├── docs/
-├── pi-deployment/                  ← deployment scripts (current work)
-└── archive/
-    └── phase2-vpn-exit-node/       ← legacy single-VPN-exit-node prototype, superseded by mesh design
+gui/                 IDS GUI — backend/ (FastAPI) + frontend/ (React/Vite) + deploy/
+pi-deployment/       node hardening + firewall scripts (harden-base.sh, open-gui-port.sh)
+docs/                planning, runbooks, flowcharts, wg-templates/ (mesh configs)
+daemon/              wg-selfheal Go daemon (later phase)
+archive/             superseded phase-2 single-exit-node prototype
+CODE-MAP.md          per-file map of the whole codebase + a runbook index
+phaseOneRunbook.md   how to run it + how it meets the submission requirements
 ```
 
 ## Git conventions
-- **Branch prefixes**: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, `test/`
-- **Commit prefixes**: mostly match branch prefixes, with two exceptions — `refactor/` branch → `refax:` commit, `docs/` branch → `dox:` commit
-- Commit messages: lowercase, minimal punctuation, descriptive (don't have to be perfect)
-- Prefix is mandatory at start of every commit message
-- **Never push to `main`** — only merge into main via PR
-- Push from both Mac and Pi (single-user, private repo, Pi has write access via deploy key)
+- **Branch prefixes:** `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`, `test/`.
+- **Commit prefixes:** mostly match the branch prefix, with two exceptions —
+  `refactor/` → `refax:`, `docs/` → `dox:`. Prefix is mandatory.
+- Commit messages: lowercase, minimal punctuation, descriptive.
+- **Never push to `main`** — only merge into main via PR.
+- Specialty branches per node (polaris / vega) + a uniform-development line
+  (`feat/ids-mesh`) where shared code lands before it fans out.
+- Push from both Mac and Pi (single-user, private repo; Pi has write via deploy key).
 
-## SSH key topology
-- **Mac → Pi:** `~/.ssh/id_ed25519_master` with passphrase + macOS Keychain. SSH config alias `polaris`, `IdentitiesOnly yes`.
-- **Pi → GitHub:** `~/.ssh/id_ed25519_github` on Pi, no passphrase (deploy key, write enabled). SSH config block for `github.com`.
+## Keys & secrets
+- **The operator generates all real keypairs on the host that owns them** — only
+  public keys ever move. The agent never mints real private keys/secrets (test with
+  ephemeral keys only). `.gitignore` blocks `*.conf`, `*.private`, `*_private_key`.
+- **SSH topology:** Mac → Pi uses `~/.ssh/id_ed25519_master` (passphrase + Keychain),
+  SSH alias `polaris`, `IdentitiesOnly yes`. Pi → GitHub uses a per-host deploy key
+  (`~/.ssh/id_ed25519_github`, no passphrase).
+- **IDS keys:** master X25519 keypair on polaris; an Ed25519 signer per sensor node;
+  register each node's verify key in the master's registry. See
+  `docs/ids-planning/03-crypto-and-keys.md` + `gui/deploy/ids-keygen.py`.
 
 ---
 
-## Deployment script conventions (pi-deployment/)
+## Deployment script conventions (`pi-deployment/`)
 
 ### Required boilerplate
-
-Every script in `pi-deployment/` starts with strict mode and self-logging:
+Every script starts with strict mode and self-logging:
 
 ```bash
 #!/usr/bin/env bash
@@ -85,109 +107,59 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 echo "[$(date +%H:%M:%S)] Logging to: $LOG_FILE"
 ```
 
-This captures stdout, stderr, AND `bash -x` trace output into a persistent log that survives reboots. Logs go to `/var/log/vpn-pi/` because:
-- Standard Linux location for system/service logs
-- Survives if the repo is wiped or recloned
-- Persists across reboots (unlike `/tmp/`)
-- Already accessible since these scripts run with sudo
-
-Filename pattern: `<script-name>-YYYYMMDD-HHMMSS.log` so multiple runs accumulate rather than overwrite. Manual pruning for now; add logrotate config later if logs grow.
+This captures stdout, stderr, and `bash -x` trace into a persistent log under
+`/var/log/vpn-pi/` (standard location; survives reboots and a repo re-clone, unlike
+`/tmp/`). Filename pattern `<script>-YYYYMMDD-HHMMSS.log` accumulates runs.
 
 ### Other conventions
+- Descriptive function names — one section of work per function.
+- **Idempotent everywhere** — check current state before changing it.
+- Echo a status header per section so the operator sees live progress.
+- Verify-then-modify for configs — don't blindly overwrite working state.
 
-- Functions with descriptive names — one section of work per function
-- Idempotent everywhere — check current state before changing it
-- Echo a status header per section so the operator sees live progress
-- Verify-then-modify pattern for configs (don't blindly overwrite working state)
-
----
-
-## Running deployment scripts
-
-### Standard invocation
-
+### Running them
 ```bash
 cd ~/projects/vpn-pi
 sudo bash -x pi-deployment/<script-name>.sh
 ```
+`bash -x` trace goes to stderr, which the script redirects into its own log — don't
+add `| tee` on the command line.
 
-`bash -x` traces each command as it runs. Don't add `| tee` on the command line — the script handles its own logging via `exec`. The `-x` trace goes to stderr, which the script redirects into the same log file, so the trace IS captured.
+### Pre-flight for hardening / firewall / SSH scripts (can lock you out)
+1. Open a **second SSH session** as an idle safety net.
+2. Run the script.
+3. In a **third terminal**, test fresh `ssh polaris`. If it works, close the net.
+4. Review the log if anything looked off.
 
-### Pre-flight checklist for hardening / firewall / SSH scripts
-
-These can lock you out of the Pi. Before running:
-
-1. **Open a second SSH session** in another terminal. Keep it idle as a safety net.
-2. **Run the script** with the standard invocation above.
-3. **After completion, open a third terminal and test fresh SSH:**
-   ```bash
-   ssh polaris
-   ```
-   If fresh SSH works, you're good — close the safety net and proceed.
-   If it doesn't, troubleshoot from the safety-net session you kept open.
-4. **Review the log** at the path printed by the script if anything looked off.
-
-### Recovery if locked out
-- Safety-net SSH session (if still alive)
-- Edit SD card from the Mac via the USB-C reader
-- Last resort: re-flash with `ssh-copy-id` recovery procedure
-
----
-
-## Current task
-
-`harden-base.sh` on `feat/polaris-hardening` — **applied to polaris and vega**. Remaining: sirius, altair, arcturus.
-
-What the script does (idempotent, safe to re-run on polaris and to apply to vega/sirius/altair/arcturus when they come online):
-1. Verify running as root
-2. `apt update` + `apt upgrade -y`
-3. Install `nftables`, `fail2ban`, `unattended-upgrades`, `wireguard`
-4. SSH lockdown via `sshd_config.d` drop-in: `PasswordAuthentication no`, `PermitRootLogin no`, `PubkeyAuthentication yes`
-5. nftables baseline: default-deny inbound, allow loopback, allow established/related, allow SSH (port 22), allow ICMP echo. WG port NOT opened yet.
-6. fail2ban sshd jail, maxretry 5, bantime 1h (waits for control socket to bind before verifying jail)
-7. unattended-upgrades for security patches only
-8. Print summary of active services and firewall rules
-
-Still NOT done by this script (deferred):
-- Configure WG tunnels (architecture pivot pending)
-- Open WG port in firewall (per-node, later)
-- Modify SSH port
-- Touch `/etc/hostname`
-
-First-run notes (polaris, 2026-05-14):
-- Pre-run sshd state was `PasswordAuthentication=yes` and `PermitRootLogin=without-password` — Imager didn't fully lock them down. Drop-in fixes both.
-- Initial run hit a fail2ban race (control socket not bound when verification fired). Fixed in-script with a `fail2ban-client ping` poll loop. Re-run for clean idempotent end-to-end pass + summary output.
+**Recovery if locked out:** the safety-net session → edit the SD card from the Mac
+via USB-C reader → last resort re-flash + `ssh-copy-id`.
 
 ---
 
 ## Key gotchas already learned
-
-- **Pi Imager can silently fail to write `~/.ssh/authorized_keys`** — recover by re-flashing with password auth enabled as fallback, then `ssh-copy-id` from the Mac.
-- **"Service active" ≠ "service defending"** — always trigger defenses to verify they actually work (fail2ban especially).
-- **`IdentitiesOnly yes`** is required in Mac SSH config when the agent holds multiple keys, otherwise SSH hits `MaxAuthTries` before reaching the right one.
-- **`/tmp/` clears on reboot** — never put logs there if you might want them after a kernel update reboot.
-- **mDNS (`*.local`) breaks under the hardening firewall.** The nftables baseline drops inbound UDP/5353, so the Pi never answers mDNS queries even though `avahi-daemon` is still running and listening. Symptom: `ssh polaris.local` hangs with no client output and no entry in the Pi's `journalctl -u ssh`. Fix: connect by IP and pin the Pi to a known address via DHCP reservation on the router (not static-on-Pi). Don't poke a hole for 5353 unless mDNS is actually needed — IP + reservation is the more secure default.
-
----
-
-## William's preferences
-
-- Wants pushback, not validation
-- Wants honest hour estimates, no padding
-- Wants engineering judgment, not corporate hedging
-- Does NOT want unsolicited sleep/rest advice. If directly asked, advise honestly; otherwise stay out.
-- Does NOT want copy-paste answers in deliverables — wants help structuring his own voice
-- Casual tone fine; cursing sparingly OK
-- Direct corrections welcome
+- **mDNS (`*.local`) breaks under the hardening firewall.** The nftables baseline
+  drops inbound UDP/5353, so the Pi never answers mDNS even though `avahi-daemon` is
+  running. `ssh polaris.local` just hangs. Fix: connect by IP + pin the node via DHCP
+  reservation (not static-on-Pi).
+- **"Service active" ≠ "service defending"** — trigger defenses to verify they work
+  (fail2ban especially).
+- **`IdentitiesOnly yes`** is required in the Mac SSH config when the agent holds
+  multiple keys, else SSH hits `MaxAuthTries` before the right key.
+- **fail2ban must log to the journal** (`logtarget = SYSTEMD-JOURNAL`) or its bans
+  never reach the GUI's journal-derived JAILS panel.
+- **SELinux (sirius):** never global `setenforce 0` to collect AVCs — it can
+  black-screen the desktop; scope `semanage permissive` to the service domain. Deploy
+  under `/opt`, not `/home`. Recover a mislabel with `fixfiles -F onboot && reboot`.
+- **Pi Imager** can silently fail to write `authorized_keys` — recover by re-flashing
+  with password auth, then `ssh-copy-id`.
+- **`/tmp/` clears on reboot** — never put logs there.
 
 ---
 
 ## Open items
-
-- Architecture pivot verifications (CGNAT, office UDP, endpoint definitions)
-- Topology flowchart rebuild (site boundaries, named nodes, no traffic arrows)
-- Dev workflow flowchart (not started)
-- Threat model revision (depends on pivot outcome)
-- IDS data flow diagram (Phase 8 prep)
-- All current flowcharts need site-label swap if pivot confirmed
-- Mermaid migration of flowcharts (eventually)
+- sirius endpoint deploy (x86 / SELinux) — in progress.
+- IPv6 dual-stack rollout across the live wg configs.
+- Remove leftover exit-node plumbing (NAT / forwarding) — no egress point in the
+  island model.
+- Threat model + scope docs refresh to the island-internet framing.
+- Flowchart rebuild (named nodes, hub-and-spoke) + eventual Mermaid migration.
