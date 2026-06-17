@@ -1,0 +1,9 @@
+# island-gate sudoers — install to /etc/sudoers.d/island-gate (root:root, mode 0440).
+# Validate before relying on it:  visudo -cf /etc/sudoers.d/island-gate
+#
+# Lets the islandd service user run ONLY the two fixed gate verbs as root — nothing
+# else. NOTE: the commands are pinned with explicit arguments. Do NOT use a wildcard
+# (e.g. `island-gate *`) — that would let a compromised islandd pass arbitrary args.
+# Replace `islandd` with the actual service user if different.
+
+islandd ALL=(root) NOPASSWD: /usr/local/sbin/island-gate open, /usr/local/sbin/island-gate close

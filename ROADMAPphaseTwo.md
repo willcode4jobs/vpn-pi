@@ -5,23 +5,40 @@ not the truth itself — follow the links.
 
 ## Where the project is right now
 
-**Phase Two refactor — planning stage, nothing executed.** The Phase One
-Python/React IDS GUI is being retired and rebuilt as a **TypeScript-on-Bun** app:
-a peer-to-peer WireGuard mesh "gated island internet" with friending-based auth and
-an LLM-mediated internet gate. The plan is written and under review; no files have
-been moved, deleted, or pushed yet.
+**Phase Two refactor — build in progress (Phases A–G done — the whole app).** The Phase One
+Python/React IDS GUI is being retired and rebuilt as a **TypeScript-on-Bun** app
+in [`island/`](island/): a peer-to-peer WireGuard mesh "gated island internet" with
+friending-based auth and an LLM-mediated internet gate.
 
 - Working branch: `feat/ids-mesh` (Phase One `gui/` already staged for deletion).
-- Target branch for the rebuild: `feat/island-ts` (not yet created).
-- Archive target for the old app: `archive/phase-one-gui` (not yet created).
+- Target branch for the rebuild: `feat/island-ts` (created at migration, Phase H).
+- Archive target for the old app: `archive/phase-one-gui` (created at Phase H).
+
+### Build progress (see [`docs/phase-two/BUILD-PLAN.md`](docs/phase-two/BUILD-PLAN.md))
+
+| Phase | What | Status |
+|---|---|---|
+| A | scaffold + crypto core (canonical, envelope, identity) | ✅ done |
+| B | friending (token give/accept/confirm, state machine) | ✅ done |
+| C | universal file share (vega SQLite, Phase One API) | ✅ done |
+| D | messaging (P2P sealed) | ✅ done |
+| E | home / sysinfo (fail2ban + wg status) | ✅ done |
+| F | gate + canary (`GREEN18`, Llama, 45-min egress) | ✅ done |
+| G | admin surface + frontend + compile | ✅ done |
+| H | migration (archive → delete → branch) + deploy | ◻ next |
+
+All built code lives in `island/`; **58 tests pass**, `tsc` clean. Nothing in git
+has been moved, deleted, or pushed yet.
 
 ## Sources of truth (in priority order)
 
 | Source | What it is | Authority |
 |---|---|---|
 | [`newContextFile.md`](newContextFile.md) | The user's original Phase Two intent (raw) | **Intent** — the "why" |
+| [`docs/phase-two/BUILD-PLAN.md`](docs/phase-two/BUILD-PLAN.md) | Locked decisions + ordered build phases | **Build truth** — the "what next" |
+| [`docs/phase-two/PROGRESS.md`](docs/phase-two/PROGRESS.md) | Build log of what's actually been built (Phases A–G) | **Built truth** — the "what's done" |
 | [`docs/phase-two/`](docs/phase-two/) | The Phase Two design skeleton, files `00`–`08` | **The plan** — the "what/how" |
-| [`docs/phase-two/08-open-questions.md`](docs/phase-two/08-open-questions.md) | Decisions still owned by William | **Open items** |
+| [`docs/phase-two/08-open-questions.md`](docs/phase-two/08-open-questions.md) | The 12 questions + William's answers (all resolved) | Decisions log |
 | [`README.md`](README.md) | Phase One overview + how to run it | Phase One (being superseded) |
 | [`CODE-MAP.md`](CODE-MAP.md) | Per-file map of the Phase One codebase | Phase One reference to port from |
 | `gui-and-app/`, `gui/` | Phase One Python/React implementation | **Reference only** — to be archived |
@@ -40,17 +57,25 @@ Read [`00-README.md`](docs/phase-two/00-README.md) first; it indexes the rest:
 - **Auth: mutual friending** (token give→accept); admin can delete but never forge. → `04`
 - **Universal file share = vega's existing SQLite DB, reused.** polaris's DB server
   is **deprecated**. (A hosted service on vega, not a traffic relay.) → `02`, `05`
-- **Gate: default closed (island mode);** a signed+sealed **canary** keyword,
-  interpreted by a local **Llama**, opens vega's egress time-boxed. → `06`
+- **Gate: default closed (island mode);** a signed+sealed **`GREEN18`** canary,
+  interpreted by **Llama on vega**, opens vega's egress for **45 min** then auto-recloses. → `06`
 - **Crypto carried over: Ed25519 sign + X25519 seal** via `libsodium-wrappers`,
   byte-compatible with Phase One's `ids_crypto.py`. → `04`
+- **vega = gate + file authority + Llama host** (the 16 GB Pi); canary stays local on vega.
+- **File share: fully shared** among friended members; `node` column = adder pubkey/label.
+- **Mesh bootstrap: endpoint-anchored** (vega anchors reachability; no app-layer relay). → `02`
+- **Admin = a dedicated Ed25519 key** William generates; daemon loads its pubkey.
+- **Single binary** via `bun build --compile`; cross-compile per arch, build-on-node fallback.
 
-## Still open (need the user) — see [`08`](docs/phase-two/08-open-questions.md)
+## All open questions answered
 
-- **Q12 (blocks archive):** which ref holds the last-good Python app to snapshot.
-- **Q3b:** is the file share fully-shared or per-friend-pair; `node` column identity.
-- Canary specifics: keyword, Llama approval policy, max open duration.
-- NAT-traversal stance; which node runs Llama; admin-key identity.
+The 12 questions in [`08-open-questions.md`](docs/phase-two/08-open-questions.md) are
+**resolved** (answers inline there). They're consolidated into the execution plan:
+
+> 👉 **[`docs/phase-two/BUILD-PLAN.md`](docs/phase-two/BUILD-PLAN.md) — the build source of truth.**
+
+Deferred (not open, just later): Go `daemon/` reintegration (after it's finished);
+cross-node IDS aggregation. Build branch `feat/island-ts` not yet created.
 
 ## Conventions for working here
 

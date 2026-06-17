@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>island</title>
+<style>
+  :root { --bg:#0e1116; --panel:#171c24; --ink:#e6edf3; --mut:#8b97a7; --acc:#3fb950; --warn:#d29922; --bad:#f85149; --line:#262d38; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg); color:var(--ink); }
+  header { display:flex; align-items:center; gap:1rem; padding:.8rem 1rem; border-bottom:1px solid var(--line); }
+  header b { font-size:1.1rem; } header .sp { flex:1; }
+  nav { display:flex; gap:.25rem; padding:.5rem 1rem; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  nav button { background:var(--panel); color:var(--ink); border:1px solid var(--line); padding:.4rem .8rem; border-radius:6px; cursor:pointer; }
+  nav button.on { border-color:var(--acc); color:var(--acc); }
+  main { padding:1rem; max-width:900px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:1rem; margin-bottom:1rem; }
+  h2 { margin:.2rem 0 .8rem; font-size:1rem; } h3 { margin:.8rem 0 .4rem; font-size:.9rem; color:var(--mut); }
+  button.act { background:var(--acc); color:#04130a; border:none; padding:.45rem .9rem; border-radius:6px; cursor:pointer; font-weight:600; }
+  button.sm { padding:.2rem .55rem; font-size:.8rem; border:1px solid var(--line); background:var(--bg); color:var(--ink); border-radius:5px; cursor:pointer; }
+  button.danger { border-color:var(--bad); color:var(--bad); }
+  input,textarea,select { width:100%; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:.45rem; font:inherit; margin:.2rem 0; }
+  textarea { min-height:64px; resize:vertical; }
+  .row { display:flex; gap:.5rem; align-items:center; }
+  .badge { display:inline-block; padding:.15rem .55rem; border-radius:99px; font-weight:600; }
+  .island { background:#16301d; color:var(--acc); } .internet { background:#3a2a10; color:var(--warn); }
+  .up { color:var(--acc); } .down { color:var(--bad); }
+  table { width:100%; border-collapse:collapse; } td,th { text-align:left; padding:.35rem .4rem; border-bottom:1px solid var(--line); vertical-align:top; }
+  .mut { color:var(--mut); } .mono { word-break:break-all; } pre { white-space:pre-wrap; word-break:break-all; margin:0; }
+  .msg { padding:.35rem .6rem; border-radius:8px; margin:.25rem 0; max-width:80%; }
+  .msg.out { background:#16301d; margin-left:auto; } .msg.in { background:var(--bg); border:1px solid var(--line); }
+  .err { color:var(--bad); } .ok { color:var(--acc); }
+</style>
+</head>
+<body>
+<header><b>island</b><span class="badge island" id="gateBadge">…</span><span class="sp"></span><span class="mut" id="who">…</span></header>
+<nav id="nav"></nav>
+<main id="view"></main>
+
+<script>
+const ADMIN = location.pathname.startsWith("/admin");
+const TABS = ADMIN ? ["Admin","Home","Friends","Files","Messages"] : ["Home","Friends","Files","Messages"];
+let tab = TABS[0];
+const $ = (h) => { const t=document.createElement("template"); t.innerHTML=h.trim(); return t.content.firstChild; };
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const adminTok = () => localStorage.getItem("adminTok") || "";
+
+async function api(path, opts={}) {
+  const h = opts.headers || {};
+  if (ADMIN && adminTok()) h["x-admin-token"] = adminTok();
+  if (opts.json !== undefined) { h["content-type"]="application/json"; opts.body=JSON.stringify(opts.json); }
+  const r = await fetch(path, { ...opts, headers:h });
+  const ct = r.headers.get("content-type")||"";
+  const body = ct.includes("json") ? await r.json().catch(()=>null) : await r.text();
+  if (!r.ok) throw new Error((body && body.error) || r.status);
+  return body;
+}
+
+async function refreshGate(){ try { const g=await api("/api/gate"); const b=document.getElementById("gateBadge"); b.textContent = g.state==="internet"?"internet access":"island mode"; b.className="badge "+(g.state==="internet"?"internet":"island"); } catch{} }
+
+function render(){
+  const nav=document.getElementById("nav"); nav.innerHTML="";
+  TABS.forEach(t=>{ const b=$(`<button>${t}</button>`); if(t===tab)b.className="on"; b.onclick=()=>{tab=t;render();}; nav.append(b); });
+  const v=document.getElementById("view"); v.innerHTML="";
+  ({Home,Friends,Files,Messages,Admin})[tab](v);
+}
+const note=(v,msg,cls="ok")=>{ const n=$(`<div class="${cls}">${esc(msg)}</div>`); v.prepend(n); setTimeout(()=>n.remove(),4000); };
+
+// ---- Home ----
+async function Home(v){
+  const c=$(`<div class="card"><h2>Home</h2><div id="h">loading…</div></div>`); v.append(c);
+  try {
+    const d=await api("/api/home"); const h=c.querySelector("#h");
+    h.innerHTML=`
+      <p>Gate: <span class="badge ${d.gate.state}">${d.gate.state==="internet"?"internet access":"island mode"}</span> ${d.gate.closes_at?`<span class="mut">closes ${esc(d.gate.closes_at)}</span>`:""}</p>
+      <h3>WireGuard (${esc(d.wg.iface)})</h3>
+      <table><tr><th>peer</th><th>wg0</th><th>handshake</th></tr>${d.wg.peers.map(p=>`<tr><td>${esc(p.label||"—")}</td><td class="mono">${esc(p.wg0)}</td><td class="${p.up?"up":"down"}">${p.up?"up":"down"}${p.handshake_age_s!=null?` (${p.handshake_age_s}s)`:""}</td></tr>`).join("")||"<tr><td colspan=3 class=mut>no peers</td></tr>"}</table>
+      <h3>fail2ban</h3>
+      <table><tr><th>jail</th><th>banned now</th><th>ips</th></tr>${d.fail2ban.map(j=>`<tr><td>${esc(j.jail)}</td><td>${j.currently_banned}</td><td class="mono">${esc(j.banned_ips.join(", "))}</td></tr>`).join("")||"<tr><td colspan=3 class=mut>none</td></tr>"}</table>
+      <h3>friend requests (${d.requests.length})</h3>
+      ${d.requests.map(r=>`<div class="row"><span>${esc(r.from_label)} <span class="mut mono">${esc(r.from_pubkey.slice(0,12))}…</span></span></div>`).join("")||"<span class=mut>none</span>"}`;
+  } catch(e){ note(v,"home: "+e.message,"err"); }
+}
+
+// ---- Friends ----
+async function Friends(v){
+  const c=$(`<div class="card"><h2>Friends</h2><div id="list">loading…</div>
+    <h3>Give a token</h3><button class="act" id="mk">Issue token</button><textarea id="tok" placeholder="issued token appears here — hand it to a friend" readonly></textarea>
+    <h3>Receive a token</h3><textarea id="rin" placeholder="paste a friend's token JSON"></textarea><button class="sm" id="rcv">Receive</button>
+    <h3>Confirm an accept</h3><textarea id="cin" placeholder="paste the accept blob a friend sent back"></textarea><button class="sm" id="cf">Confirm</button>
+  </div>`); v.append(c);
+  try {
+    const d=await api("/api/friends");
+    c.querySelector("#list").innerHTML=`<table><tr><th>friend</th><th>pubkey</th></tr>${d.friends.map(f=>`<tr><td>${esc(f.peer.label)}</td><td class="mono">${esc(f.peer.ed25519.slice(0,16))}…</td></tr>`).join("")||"<tr><td colspan=2 class=mut>none yet</td></tr>"}</table>
+      ${d.pending.length?`<h3>pending requests</h3>`+d.pending.map(p=>`<div class="row"><span>${esc(p.peer.label)}</span><button class="sm" data-giver="${esc(p.peer.ed25519)}">Accept</button></div>`).join(""):""}`;
+    c.querySelectorAll("[data-giver]").forEach(b=>b.onclick=async()=>{ try{ const r=await api("/api/friends/accept",{json:{giver:b.dataset.giver}}); prompt("Send this accept blob back to the giver:", r.accept); render(); }catch(e){note(v,e.message,"err");} });
+  } catch(e){ note(v,e.message,"err"); }
+  c.querySelector("#mk").onclick=async()=>{ try{ const r=await api("/api/friends/token",{json:{ttlSeconds:86400}}); c.querySelector("#tok").value=JSON.stringify(r.token); }catch(e){note(v,e.message,"err");} };
+  c.querySelector("#rcv").onclick=async()=>{ try{ await api("/api/friends/receive",{json:{token:JSON.parse(c.querySelector("#rin").value)}}); note(v,"received — see pending"); render(); }catch(e){note(v,e.message,"err");} };
+  c.querySelector("#cf").onclick=async()=>{ try{ await api("/api/friends/confirm",{json:{accept:c.querySelector("#cin").value.trim()}}); note(v,"friend confirmed"); render(); }catch(e){note(v,e.message,"err");} };
+}
+
+// ---- Files ----
+async function Files(v){
+  const c=$(`<div class="card"><h2>Universal file share</h2><div id="list">loading…</div>
+    <h3>Upload</h3><input type="file" id="f"><button class="act" id="up">Upload</button></div>`); v.append(c);
+  try { const d=await api("/api/files");
+    c.querySelector("#list").innerHTML=`<p class="mut">${esc(d.root)} · ${esc(d.bind)}</p><table><tr><th>name</th><th>size</th><th>by</th><th></th></tr>${d.files.map(f=>`<tr><td><a href="/api/files/${f.id}/download">${esc(f.name)}</a></td><td>${f.size}</td><td class="mono">${esc(String(f.node).slice(0,10))}…</td><td><button class="sm danger" data-del="${f.id}">delete</button></td></tr>`).join("")||"<tr><td colspan=4 class=mut>empty</td></tr>"}</table>`;
+    c.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{ try{ await api("/api/files/"+b.dataset.del,{method:"DELETE"}); render(); }catch(e){note(v,e.message,"err");} });
+  } catch(e){ note(v,e.message,"err"); }
+  c.querySelector("#up").onclick=async()=>{ const f=c.querySelector("#f").files[0]; if(!f)return; const fd=new FormData(); fd.append("file",f); try{ await fetch("/api/files",{method:"POST",body:fd}); note(v,"uploaded"); render(); }catch(e){note(v,e.message,"err");} };
+}
+
+// ---- Messages ----
+async function Messages(v){
+  const c=$(`<div class="card"><h2>Messages</h2><select id="peer"></select><div id="thread" class="mut">pick a friend</div>
+    <div class="row"><input id="body" placeholder="message…"><button class="act" id="send">Send</button></div></div>`); v.append(c);
+  let peers=[]; try { peers=(await api("/api/friends")).friends; } catch(e){ note(v,e.message,"err"); }
+  const sel=c.querySelector("#peer"); sel.innerHTML=peers.map(f=>`<option value="${esc(f.peer.ed25519)}">${esc(f.peer.label)}</option>`).join("");
+  async function loadThread(){ const ed=sel.value; if(!ed){return;} try{ const d=await api("/api/messages?peer="+encodeURIComponent(ed)); c.querySelector("#thread").innerHTML=d.thread.map(m=>`<div class="msg ${m.dir}">${esc(m.body)}<div class="mut" style="font-size:.7rem">${esc(m.ts)}</div></div>`).join("")||"<span class=mut>no messages</span>"; }catch(e){note(v,e.message,"err");} }
+  sel.onchange=loadThread; if(peers.length) loadThread();
+  c.querySelector("#send").onclick=async()=>{ const body=c.querySelector("#body").value.trim(); if(!body||!sel.value)return; try{ const r=await api("/api/messages",{json:{peer:sel.value,body}}); c.querySelector("#body").value=""; note(v,r.delivered?"delivered":"sent (peer offline)"); loadThread(); }catch(e){note(v,e.message,"err");} };
+}
+
+// ---- Admin ----
+async function Admin(v){
+  const c=$(`<div class="card"><h2>Admin</h2>
+    <h3>admin token</h3><input id="tok" placeholder="x-admin-token (blank in --mock)" value="${esc(adminTok())}">
+    <h3>friendships</h3><div id="fr">loading…</div>
+    <h3>internet gate</h3><div class="row"><button class="act" id="open">Open gate</button><button class="sm danger" id="close">Close gate</button></div>
+    <div id="gateLog" class="mut"></div></div>`); v.append(c);
+  c.querySelector("#tok").onchange=e=>localStorage.setItem("adminTok",e.target.value);
+  try { const d=await api("/admin/friends");
+    c.querySelector("#fr").innerHTML=`<table><tr><th>friend</th><th>pubkey</th><th></th></tr>${d.friends.map(f=>`<tr><td>${esc(f.peer.label)}</td><td class="mono">${esc(f.peer.ed25519.slice(0,16))}…</td><td><button class="sm danger" data-del="${esc(f.peer.ed25519)}">delete</button></td></tr>`).join("")||"<tr><td colspan=3 class=mut>none</td></tr>"}</table><p class="mut">Admin can delete a friendship but can never create one.</p>`;
+    c.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{ if(!confirm("Delete this friendship?"))return; try{ await api("/admin/friends/"+encodeURIComponent(b.dataset.del),{method:"DELETE"}); render(); }catch(e){note(v,e.message,"err");} });
+  } catch(e){ c.querySelector("#fr").innerHTML=`<span class="err">${esc(e.message)}</span>`; }
+  async function gatelog(){ try{ const l=await api("/admin/gate/log"); c.querySelector("#gateLog").innerHTML="<h3>gate log</h3>"+(l.log.map(e=>`${esc(e.at)} · <b>${esc(e.action)}</b> ${esc(e.reason||"")}`).join("<br>")||"none"); }catch{} }
+  gatelog();
+  c.querySelector("#open").onclick=async()=>{ try{ // demo path: mint (mock) then send the canary
+      const m=await api("/admin/canary/mint",{json:{text:"GREEN18 open the gate"}});
+      const r=await api("/admin/canary",{json:{blob:m.blob}});
+      note(v,r.opened?("gate opened — "+r.reason):("denied — "+r.reason),r.opened?"ok":"err"); refreshGate(); gatelog();
+    }catch(e){ note(v,"open needs the admin app in production: "+e.message,"err"); } };
+  c.querySelector("#close").onclick=async()=>{ try{ await api("/admin/gate/close",{method:"POST"}); note(v,"gate closed"); refreshGate(); gatelog(); }catch(e){note(v,e.message,"err");} };
+}
+
+(async()=>{ try{ const h=await api("/api/health"); document.getElementById("who").textContent=(ADMIN?"admin · ":"")+(h.mock?"mock":"node")+" v"+h.version; }catch{} refreshGate(); render(); })();
+</script>
+</body>
+</html>

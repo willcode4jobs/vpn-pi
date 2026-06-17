@@ -13,16 +13,26 @@ the admin surface as a gated superset of routes:
   ├─ /admin       → admin routes         (manage friends, canary gate)
   │                 guarded by an admin token; identical code, extra scope
   ├─ src/core/    → shared modules (imported by both route groups)
-  │   ├─ identity.ts   (Ed25519 + X25519 keypair, libsodium-wrappers)
-  │   ├─ friends.ts    (token give/accept, store, revoke)        → [04]
-  │   ├─ envelope.ts   (sign-then-seal / open-then-verify)       → [04]
-  │   ├─ store.ts      (local node state; client to vega's share) → [05]
-  │   ├─ share.ts      (vega only: the universal file-share DB)   → [05]
-  │   ├─ gate.ts       (read gate state; on vega, request toggle)→ [06]
-  │   ├─ canary.ts     (build/verify signed+sealed canary)       → [06]
-  │   └─ sysinfo.ts    (fail2ban + wg status readers)            → [05]
-  └─ web/         → one static HTML/JS/CSS bundle, served by the process
+  │   ├─ sodium.ts     ✅ libsodium init seam (require() — see build gotcha)
+  │   ├─ codec.ts      ✅ base64 (matches Python b64)
+  │   ├─ canonical.ts  ✅ canonical JSON (byte-identical to Phase One)      → [04]
+  │   ├─ envelope.ts   ✅ sign-then-seal / open-then-verify                 → [04]
+  │   ├─ identity.ts   ✅ Ed25519 + X25519 keypair (load / mock-generate)   → [04]
+  │   ├─ friends.ts    ✅ token give/accept/confirm, state machine, revoke  → [04]
+  │   ├─ share.ts      ✅ universal file share: Memory|Sqlite(vega)|Remote  → [05]
+  │   ├─ messages.ts   ✅ sealed P2P messages + per-peer log                 → [05]
+  │   ├─ sysinfo.ts    ✅ fail2ban + wg status readers (Home)                → [05]
+  │   ├─ canary.ts     ✅ build/verify the signed+sealed GREEN18 canary      → [06]
+  │   ├─ gate.ts       ✅ gate state machine + LlamaClient + GateExec        → [06]
+  │   └─ (deploy/island-gate ✅ the root-owned egress helper)                → [06]
+  └─ web/index.html ✅ single-file SPA (Home/Friends/Files/Messages/Admin), embedded
 ```
+
+> ✅ built (Phases A–G — the whole app). Remaining: Phase H (migration + deploy),
+> which is git/ops, not new app code. The node→vega client is
+> `RemoteFileShare` in `share.ts` (a planned separate `store.ts` proved unnecessary —
+> local friend state lives in `friends.json`). Messaging delivers peer→peer directly
+> (no hub); each node keeps an append-only log in `messages.json`.
 
 Why one process, not two: it makes "the two backends are very similar" true *by
 construction* (they share every line of `src/core/`), removes a whole class of
@@ -70,7 +80,7 @@ admin build from one tree — a one-line change, noted in [08](08-open-questions
 | `peers.py` (wg0-IP allowlist) | `core/friends.ts` | Replaced: IP allowlist → friend graph |
 | `relay.py` (hub blind relay) | — | Removed: no hub in a flat mesh |
 | `db.py` `SqliteFileStore` (central share) | `core/share.ts` (vega) | **Reused** — same `files` schema, now authoritative on vega (was polaris) |
-| `store.py` / `remote.py` (node's view) | `core/store.ts` | Node-side client to vega's share + local friend/message state |
+| `store.py` / `remote.py` (node's view) | `RemoteFileShare` in `core/share.ts` | Node-side client forwarding to vega; local friend state is `friends.json` |
 | `sources/fail2ban.py`, host status | `core/sysinfo.ts` | Ported; local-only, shown on Home |
 | `viewauth.py` | admin-token check | Folded into the `/admin` route guard |
 | React frontend | `web/` static bundle | Slimmed to the four user views + admin |

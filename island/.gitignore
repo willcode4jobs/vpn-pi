@@ -1,0 +1,10 @@
+# deps & build output
+node_modules/
+islandd
+*.tsbuildinfo
+
+# runtime data — NEVER commit
+identity/        # private keypairs (William generates these on each host)
+*.db             # local node state + vega's island.db
+*.log
+data/

@@ -45,6 +45,8 @@ cryptographically signed **canary** command, interpreted by a **local LLM
 
 ## Status
 
-Skeleton drafted for review. Nothing in git has moved. See
-[08-open-questions.md](08-open-questions.md) for what I need from you before the
-first line of TypeScript gets written.
+**Build in progress — Phases A–G done** (the whole app: crypto core, friending,
+file share, P2P messaging, home/sysinfo, canary gate, admin + web UI), all in [`../../island/`](../../island/); 58 tests pass, `tsc` clean. All open questions are
+answered (see [08-open-questions.md](08-open-questions.md)); the ordered build lives
+in [BUILD-PLAN.md](BUILD-PLAN.md). Nothing in git has moved/been pushed yet —
+migration is Phase H.

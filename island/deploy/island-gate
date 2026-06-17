@@ -1,0 +1,38 @@
+#!/bin/sh
+# island-gate — the ONLY privileged action islandd can trigger.
+#
+# Toggles internet egress for the mesh on vega. It takes EXACTLY one of `open` /
+# `close` and NO other arguments — the unprivileged islandd process never passes
+# anything else (and the sudoers rule pins these two commands). The real nft rules
+# live HERE, in this root-owned script, not in the application.
+#
+# Install (see RUNBOOK-gate.md):  root:root, mode 0755, at /usr/local/sbin/island-gate
+# Adjust the interface names below (or set ISLAND_MESH_IFACE / ISLAND_UPLINK_IFACE).
+set -eu
+
+MESH_IFACE="${ISLAND_MESH_IFACE:-wg0}"
+UPLINK_IFACE="${ISLAND_UPLINK_IFACE:-eth0}"
+TABLE="island_gate"
+
+# Open: build a dedicated nft table that forwards mesh->uplink and masquerades.
+# Idempotent — rebuilt from scratch each time. Closing deletes the whole table, so
+# the box returns to its default-deny forward policy (island mode).
+gate_open() {
+  nft delete table inet "$TABLE" 2>/dev/null || true
+  nft add table inet "$TABLE"
+  nft add chain inet "$TABLE" forward '{ type filter hook forward priority 0; policy drop; }'
+  nft add rule  inet "$TABLE" forward iifname "$MESH_IFACE"   oifname "$UPLINK_IFACE" accept
+  nft add rule  inet "$TABLE" forward iifname "$UPLINK_IFACE" oifname "$MESH_IFACE"   ct state established,related accept
+  nft add chain inet "$TABLE" postrouting '{ type nat hook postrouting priority 100; }'
+  nft add rule  inet "$TABLE" postrouting oifname "$UPLINK_IFACE" masquerade
+}
+
+gate_close() {
+  nft delete table inet "$TABLE" 2>/dev/null || true
+}
+
+case "${1:-}" in
+  open)  gate_open ;;
+  close) gate_close ;;
+  *) echo "usage: island-gate open|close" >&2; exit 2 ;;
+esac
