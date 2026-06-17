@@ -107,3 +107,7 @@ auto re-asserts unhealthy tunnels) and the island-internet cleanup (removing lef
 exit-node NAT/forwarding now that there's no egress point).
 
 Repo conventions: [`CLAUDE.md`](CLAUDE.md), [`docs/gitpractice.md`](docs/gitpractice.md).
+
+=====
+Archived date
+
