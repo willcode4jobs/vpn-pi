@@ -1,0 +1,38 @@
+# islandd — the island node daemon. Install to /etc/systemd/system/islandd.service.
+#
+#   sudo useradd --system --home /var/lib/islandd --shell /usr/sbin/nologin islandd
+#   sudo install -d -o islandd -g islandd -m 0750 /var/lib/islandd
+#   # generate this node's identity keys into /var/lib/islandd/identity (William does this)
+#   sudo install -D -o root -g islandd -m 0640 islandd.env.example /etc/islandd/islandd.env
+#   sudo nano /etc/islandd/islandd.env          # set ISLAND_ADMIN_TOKEN etc.
+#   sudo install -o root -g root -m 0755 islandd /usr/local/bin/islandd
+#   sudo systemctl daemon-reload && sudo systemctl enable --now islandd
+#   journalctl -u islandd -f                      # watch it; warns if the token is weak/missing
+
+[Unit]
+Description=island node daemon (islandd)
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=islandd
+Group=islandd
+EnvironmentFile=/etc/islandd/islandd.env
+# No args needed: the bind address auto-detects from wg0 and the port reads
+# ISLAND_PORT (default 8787). Override with ISLAND_HOST/ISLAND_PORT in the env file.
+ExecStart=/usr/local/bin/islandd
+Restart=on-failure
+RestartSec=3
+
+# hardening — bound to wg0, unprivileged, can only write its data dir.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/islandd
+ProtectHome=true
+PrivateTmp=true
+# NOTE: on VEGA (the gate node) the gate uses `sudo island-gate`, so do NOT set
+# NoNewPrivileges there. On every OTHER node you may add it for extra hardening:
+#   NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Island Hopper</title>
+<style>
+  /* Self-contained (no CDN; the island has no internet). Warm/editorial, light + dark.
+     Refs: Anthropic (warm paper + serif headlines), Nintendo (rounded tiles, pill tabs),
+     Chase (confident blue for "internet"). Serif = system fonts, so it works offline. */
+  :root{
+    --bg:#F2EEE6; --surface:#FFFFFF; --surface-2:#F7F2EA; --ink:#1C1813; --muted:#6E6457; --line:#E6DFD2;
+    --primary:#D14D38; --on-primary:#FFFFFF; --primary-soft:#F6E0D9; --on-primary-soft:#7A2415;
+    --ok:#1E8E3E; --error:#C0271D;
+    --island-bg:#E2F3E7; --island-fg:#1B7A37; --internet-bg:#E1ECFB; --internet-fg:#1463C7;
+    --island-grad:linear-gradient(135deg,#1E8E3E,#125F2A); --internet-grad:linear-gradient(135deg,#1463C7,#0E4385);
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --r-s:12px; --r-l:18px; --r-lg:26px; --r-full:999px;
+    --e1:0 1px 2px rgba(40,30,20,.06),0 6px 18px rgba(40,30,20,.05);
+    --e2:0 14px 38px rgba(40,30,20,.16);
+  }
+  :root[data-theme="dark"]{
+    --bg:#15120E; --surface:#211C16; --surface-2:#2A241C; --ink:#F3EEE5; --muted:#A99E8D; --line:#39312A;
+    --primary:#E86A4A; --on-primary:#1B0E09; --primary-soft:#3A201A; --on-primary-soft:#F4C6B8;
+    --ok:#43C46B; --error:#FF6B5E;
+    --island-bg:#15301F; --island-fg:#52CE78; --internet-bg:#12233E; --internet-fg:#6BA8F2;
+    --island-grad:linear-gradient(135deg,#1E8E3E,#0E4D22); --internet-grad:linear-gradient(135deg,#1F6FD0,#0E3E78);
+    --e1:0 1px 2px rgba(0,0,0,.5),0 6px 18px rgba(0,0,0,.35); --e2:0 16px 40px rgba(0,0,0,.6);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:var(--sans);background:var(--bg);color:var(--ink);font-size:15px;line-height:1.5}
+  .bar{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:.85rem;padding:1rem 1.5rem;background:var(--surface);border-bottom:1px solid var(--line)}
+  .bar h1{font:600 1.7rem var(--serif);letter-spacing:-.02em;margin:0}
+  .bar .sp{flex:1}
+  .chip{display:inline-flex;align-items:center;gap:.45rem;padding:.4rem .85rem;border-radius:var(--r-full);font-weight:700;font-size:.82rem}
+  .chip .dot{width:9px;height:9px;border-radius:50%;background:currentColor}
+  .chip.island{background:var(--island-bg);color:var(--island-fg)}
+  .chip.internet{background:var(--internet-bg);color:var(--internet-fg)}
+  .who{color:var(--muted);font-size:.82rem}
+  .iconbtn{appearance:none;border:0;background:none;color:var(--muted);font:600 .95rem var(--sans);cursor:pointer;padding:.4rem .7rem;border-radius:var(--r-full);display:inline-flex;align-items:center;gap:.4rem} .iconbtn:hover{background:var(--surface-2);color:var(--ink)}
+  .iconbtn svg{width:18px;height:18px;flex-shrink:0} .iconbtn.on{color:var(--ok)}
+  .lockbtn{border:2px solid var(--primary);color:var(--primary);padding:.4rem .9rem} .lockbtn:hover{background:var(--primary-soft);color:var(--on-primary-soft)}
+  .lockbtn.on{border-color:var(--ok);color:var(--ok)} .lockbtn.on:hover{background:var(--surface-2)}
+  .avatar svg{width:22px;height:22px}
+  .tabs{display:flex;gap:.4rem;padding:.65rem 1.25rem;background:var(--surface);border-bottom:1px solid var(--line);overflow-x:auto}
+  .tabs button{appearance:none;border:0;background:none;color:var(--muted);font:600 .98rem var(--sans);padding:.5rem 1.05rem;cursor:pointer;border-radius:var(--r-full);white-space:nowrap;transition:.15s}
+  .tabs button:hover{background:var(--surface-2);color:var(--ink)}
+  .tabs button.on{background:var(--primary-soft);color:var(--on-primary-soft)}
+  main{max-width:860px;margin:1.75rem auto;padding:0 1.25rem 5rem}
+  .hero{color:#fff;border-radius:var(--r-lg);padding:2.6rem 2.2rem;margin-bottom:1.5rem;box-shadow:var(--e2);background:var(--island-grad)}
+  .hero.internet{background:var(--internet-grad)}
+  .hero .eyebrow{font:700 .72rem var(--sans);letter-spacing:.22em;opacity:.85;margin-bottom:.9rem}
+  .hero .htitle{font:600 2.2rem/1.08 var(--serif);letter-spacing:-.02em;margin:0 0 .6rem}
+  .hero .hsub{opacity:.92;font-size:1.05rem;max-width:48ch;margin:0}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-l);box-shadow:var(--e1);padding:1.85rem;margin-bottom:1.4rem}
+  .card h2{font:600 1.5rem var(--serif);letter-spacing:-.02em;margin:0 0 .25rem}
+  .card h3{font:700 .74rem var(--sans);text-transform:uppercase;letter-spacing:.14em;color:var(--muted);margin:1.7rem 0 .6rem}
+  .sub{color:var(--muted);font-size:.96rem;margin:0 0 1.2rem}
+  code{font-family:ui-monospace,Menlo,monospace;background:var(--surface-2);padding:.08rem .4rem;border-radius:6px;font-size:.9em}
+  .card ul{margin:.3rem 0 1rem 1.2rem;padding:0} .card li{margin:.45rem 0;line-height:1.5}
+  .btn{appearance:none;border:0;border-radius:var(--r-full);font:700 1rem var(--sans);padding:.72rem 1.5rem;cursor:pointer;display:inline-flex;align-items:center;gap:.4rem;transition:transform .12s,filter .15s,background .15s;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+  .btn.filled{background:var(--primary);color:var(--on-primary)} .btn.filled:hover{filter:brightness(1.06);transform:translateY(-1px)}
+  .btn.tonal{background:var(--primary-soft);color:var(--on-primary-soft);box-shadow:none} .btn.tonal:hover{filter:brightness(.97)}
+  .btn.text{background:none;color:var(--primary);box-shadow:none;padding:.72rem .9rem} .btn.text:hover{background:var(--surface-2)}
+  .btn.danger{background:none;color:var(--error);box-shadow:none;padding:.6rem 1rem} .btn.danger:hover{background:color-mix(in srgb,var(--error) 14%,transparent)}
+  .btn.sm{padding:.45rem 1.05rem;font-size:.9rem}
+  .btn:disabled{opacity:.4;cursor:default;filter:none;transform:none}
+  .seg{display:inline-flex;background:var(--surface-2);border-radius:var(--r-full);padding:.25rem;gap:.25rem;margin:0 0 1.1rem}
+  .seg button{appearance:none;border:0;background:none;color:var(--muted);font:700 .9rem var(--sans);padding:.45rem 1.1rem;border-radius:var(--r-full);cursor:pointer}
+  .seg button.on{background:var(--surface);color:var(--ink);box-shadow:var(--e1)}
+  label.f{display:block;margin:1rem 0}
+  label.f span{display:block;font-size:.88rem;font-weight:600;color:var(--muted);margin-bottom:.35rem}
+  input,textarea,select{width:100%;font:inherit;font-size:1rem;color:var(--ink);background:var(--surface);border:2px solid var(--line);border-radius:var(--r-s);padding:.78rem .9rem;transition:border-color .15s}
+  input:focus,textarea:focus,select:focus{outline:none;border-color:var(--primary)}
+  textarea{min-height:80px;resize:vertical;font-family:ui-monospace,Menlo,monospace;font-size:.85rem}
+  .copyrow{display:flex;gap:.5rem;align-items:flex-start} .copyrow textarea{flex:1}
+  .keybox{padding:.25rem 0 .75rem 3.4rem;border-bottom:1px solid var(--line)}
+  .meta.key{cursor:pointer}
+  .row{display:flex;align-items:center;gap:.9rem;padding:.85rem .5rem;border-bottom:1px solid var(--line);border-radius:10px;transition:background .12s}
+  .row:hover{background:var(--surface-2)} .row:last-child{border-bottom:0}
+  .avatar{width:46px;height:46px;border-radius:50%;background:var(--primary-soft);color:var(--on-primary-soft);display:flex;align-items:center;justify-content:center;font:800 1.05rem var(--sans);flex-shrink:0}
+  .grow{flex:1;min-width:0}
+  .name{font-weight:700;font-size:1.03rem} .meta{color:var(--muted);font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .empty{color:var(--muted);padding:1.1rem 0}
+  .kv{display:flex;justify-content:space-between;padding:.6rem 0;border-bottom:1px solid var(--line)}
+  .up{color:var(--ok);font-weight:700}.down{color:var(--error);font-weight:600}
+  .thread{display:flex;flex-direction:column;gap:.45rem;max-height:52vh;overflow:auto;padding:.5rem 0}
+  .bubble{padding:.6rem .95rem;border-radius:20px;max-width:78%;font-size:.98rem;line-height:1.35}
+  .bubble.out{background:var(--primary);color:var(--on-primary);align-self:flex-end;border-bottom-right-radius:6px}
+  .bubble.in{background:var(--surface-2);color:var(--ink);align-self:flex-start;border-bottom-left-radius:6px}
+  .bubble .t{font-size:.68rem;opacity:.7;margin-top:.25rem}
+  .composer{display:flex;gap:.5rem;margin-top:1rem} .composer input{border-radius:var(--r-full)}
+  #snack{position:fixed;left:50%;bottom:1.75rem;transform:translateX(-50%) translateY(2rem);opacity:0;transition:.25s;background:var(--ink);color:var(--surface);font-weight:600;padding:.9rem 1.4rem;border-radius:var(--r-s);box-shadow:var(--e2);max-width:90vw;z-index:20}
+  #snack.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  #snack.bad{background:var(--error);color:#fff}
+  a{color:var(--primary);font-weight:600}
+</style>
+</head>
+<body>
+<div class="bar"><h1>Island Hopper</h1><span class="chip island" id="gate"><span class="dot"></span>…</span><span class="sp"></span><span class="who" id="who"></span><button class="iconbtn" id="theme" title="Light / dark mode"></button></div>
+<nav class="tabs" id="tabs"></nav>
+<main id="view"></main>
+<div id="snack"></div>
+
+<script>
+const ADMIN = location.pathname.startsWith("/admin");
+const TABS = ADMIN ? [["Admin",Admin],["Home",Home],["Friends",Friends],["Files",Files],["Chat",Chat],["Guide",Guide]]
+                   : [["Home",Home],["Friends",Friends],["Files",Files],["Chat",Chat],["Guide",Guide]];
+// "Security" (mesh IDS feed) is admin-only AND only on the collector node — added in init.
+let tab = TABS[0][0];
+const el=(h)=>{const t=document.createElement("template");t.innerHTML=h.trim();return t.content.firstChild;};
+const esc=(s)=>String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const initial=(s)=>(s||"?").trim()[0]?.toUpperCase()||"?";
+const adminTok=()=>localStorage.getItem("adminTok")||"";
+let firstRunToken=null; // set once if this is the first /admin visit (one-time token reveal)
+// Inline SVG icons (self-contained, theme-aware via currentColor) — no emoji.
+const svg=(b)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${b}</svg>`;
+const ICONS={
+  moon: svg('<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>'),
+  sun: svg('<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>'),
+  download: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>'),
+  block: svg('<circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/>'),
+  alert: svg('<path d="M10.3 3.6 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
+  key: svg('<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 21 2"/><path d="M16 7l3 3"/><path d="M13 10l2.5 2.5"/>'),
+};
+
+function snack(msg,bad=false){const s=document.getElementById("snack");s.textContent=msg;s.className="show"+(bad?" bad":"");clearTimeout(s._t);s._t=setTimeout(()=>s.className="",3200);}
+async function copy(text){try{await navigator.clipboard.writeText(text);snack("Copied to clipboard");}catch{snack("Copy failed — select manually",true);}}
+
+async function api(path,opts={}){
+  const o={...opts,headers:{...(opts.headers||{})}};
+  if(o.json!==undefined){o.method=o.method||"POST";o.headers["content-type"]="application/json";o.body=JSON.stringify(o.json);delete o.json;}
+  if(adminTok())o.headers["x-admin-token"]=adminTok(); // one admin credential: unlocks operator + admin
+  const r=await fetch(path,o);
+  const ct=r.headers.get("content-type")||"";
+  const body=ct.includes("json")?await r.json().catch(()=>null):await r.text();
+  if(!r.ok)throw new Error((body&&body.error)||("HTTP "+r.status));
+  return body;
+}
+
+async function refreshGate(){try{const g=await api("/api/gate");const c=document.getElementById("gate");const on=g.state==="internet";c.className="chip "+(on?"internet":"island");c.innerHTML=`<span class="dot"></span>${on?"Internet access":"Island mode"}`;}catch{}}
+
+function render(){
+  const nav=document.getElementById("tabs");nav.innerHTML="";
+  TABS.forEach(([name])=>{const b=el(`<button>${name}</button>`);if(name===tab)b.className="on";b.onclick=()=>{tab=name;render();};nav.append(b);});
+  const v=document.getElementById("view");v.innerHTML="";
+  (TABS.find(t=>t[0]===tab)[1])(v);
+}
+
+// ---------- Home ----------
+async function Home(v){
+  const hero=el(`<div class="hero island"><div class="eyebrow">…</div><div class="htitle">Loading…</div></div>`);v.append(hero);
+  const c=el(`<div class="card"><div id="b" class="empty">Loading…</div></div>`);v.append(c);
+  try{
+    const d=await api("/api/home");const on=d.gate.state==="internet";
+    hero.className="hero "+(on?"internet":"island");
+    hero.innerHTML=`<div class="eyebrow">${on?"INTERNET ACCESS":"ISLAND MODE"}</div>
+      <div class="htitle">${on?"You're hopping the Island":"You're on the island"}</div>
+      <div class="hsub">${on?("The gate is open"+(d.gate.closes_at?` · recloses ${new Date(d.gate.closes_at).toLocaleTimeString()}`:"")):"A private network for you and your friends — no internet, by default."}</div>`;
+    c.querySelector("#b").outerHTML=`<div id="b">
+      <h3>Connectivity (${esc(d.wg.iface)})</h3>
+      ${d.wg.peers.map(p=>`<div class="row"><div class="avatar">${initial(p.label||p.wg0)}</div><div class="grow"><div class="name">${esc(p.label||"unknown")}</div><div class="meta">${esc(p.wg0)}</div></div><span class="${p.up?"up":"down"}">${p.up?"online":"offline"}</span></div>`).join("")||`<div class="empty">No peers</div>`}
+      <h3>Friend requests${d.requests.length?` (${d.requests.length})`:""}</h3>
+      ${d.requests.map(r=>`<div class="row"><div class="avatar">${initial(r.from_label)}</div><div class="grow"><div class="name">${esc(r.from_label)}</div><div class="meta">wants to connect</div></div></div>`).join("")||`<div class="empty">None — accept invites under Friends</div>`}
+      <h3>Security (fail2ban)</h3>
+      ${d.fail2ban.map(j=>`<div class="kv"><span>${esc(j.jail)}</span><span>${j.currently_banned} blocked</span></div>`).join("")||`<div class="empty">Nothing blocked</div>`}
+    </div>`;
+  }catch(e){snack(e.message,true);}
+}
+
+// ---------- Friends (streamlined) ----------
+async function Friends(v){
+  const list=el(`<div class="card"><h2>Your friends</h2><div id="l" class="empty">Loading…</div></div>`);v.append(list);
+  let pending=[];
+  try{
+    const d=await api("/api/friends");pending=d.pending;
+    const me=await api("/api/identity").catch(()=>null);
+    const meRow=me?`<div class="row"><div class="avatar">${initial(me.label)}</div><div class="grow"><div class="name">${esc(me.label)} <span class="meta">· your friend code</span></div><div class="meta key" data-copy="${esc(me.code)}" title="your friend code — click to copy" style="font-weight:700;color:var(--ink)">${esc(me.code)}</div></div><button class="btn tonal sm" data-copy="${esc(me.code)}">Copy code</button><button class="btn text sm" data-copy="${esc(me.ed25519)}">Key</button></div>`:"";
+    const friendRows=d.friends.map((f,i)=>`
+      <div class="row"><div class="avatar">${initial(f.peer.label)}</div>
+        <div class="grow"><div class="name">${esc(f.peer.label)}</div><div class="meta key" data-view="${i}" title="show full key">${esc(f.peer.ed25519.slice(0,24))}…</div></div>
+        <button class="btn text sm" data-view="${i}">Key</button>
+        <button class="btn danger sm" data-rm="${esc(f.peer.ed25519)}">Remove</button></div>
+      <div class="keybox" id="kb${i}" style="display:none">
+        <label class="f"><span>identity key (ed25519)</span><div class="copyrow"><textarea readonly>${esc(f.peer.ed25519)}</textarea><button class="btn tonal sm" data-copy="${esc(f.peer.ed25519)}">Copy</button></div></label>
+        <label class="f"><span>encryption key (x25519)</span><div class="copyrow"><textarea readonly>${esc(f.peer.x25519)}</textarea><button class="btn tonal sm" data-copy="${esc(f.peer.x25519)}">Copy</button></div></label>
+      </div>`).join("");
+    list.querySelector("#l").outerHTML=`<div id="l">${meRow}${friendRows||`<div class="empty">No friends yet — add one below</div>`}</div>`;
+    list.querySelectorAll("[data-view]").forEach(b=>b.onclick=()=>{const kb=list.querySelector("#kb"+b.dataset.view);kb.style.display=kb.style.display==="none"?"":"none";});
+    list.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(b.dataset.copy));
+    list.querySelectorAll("[data-rm]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friend? They can no longer write to this node."))return;try{await api("/api/friends/"+encodeURIComponent(b.dataset.rm),{method:"DELETE"});snack("Friend removed");render();}catch(e){snack(e.message,true);}});
+  }catch(e){snack(e.message,true);}
+
+  // Add a friend — one card, two methods via a segmented switch:
+  //   By code  → resolve via the registry, signed handshake over the mesh (primary)
+  //   By invite → exchange invite/reply blobs by hand (offline fallback, no registry)
+  const add=el(`<div class="card"><h2>Add a friend</h2>
+    <div class="seg" id="seg"><button data-pane="code" class="on">By code</button><button data-pane="invite">By invite</button></div>
+    <div id="pane-code">
+      <p class="sub">Enter a friend's code to connect.</p>
+      <div class="row" style="border:0;padding-top:0"><input id="code" placeholder="ISL-XXXXX-XXXXX" autocomplete="off" style="text-transform:uppercase"><button class="btn filled" id="addbtn">Add</button></div>
+    </div>
+    <div id="pane-invite" style="display:none">
+      <p class="sub">No registry? Exchange invites directly.</p>
+      <h3>Create an invite</h3>
+      <button class="btn filled" id="mk">Create invite</button>
+      <div id="ibox" style="display:none">
+        <label class="f"><span>Invite — send this to your friend</span><div class="copyrow"><textarea id="itok" readonly></textarea><button class="btn tonal sm" id="icopy">Copy</button></div></label>
+        <label class="f"><span>Their reply</span><textarea id="irep" placeholder="paste the reply they send back"></textarea></label>
+        <button class="btn filled" id="ifin">Finish</button>
+      </div>
+      <h3>Got an invite?</h3>
+      <label class="f"><span>Invite</span><textarea id="ain" placeholder="paste the invite a friend sent you"></textarea></label>
+      <button class="btn filled" id="ado">Accept invite</button>
+      <div id="abox" style="display:none"><label class="f"><span>Reply — send this back to them</span><div class="copyrow"><textarea id="arep" readonly></textarea><button class="btn tonal sm" id="acopy">Copy</button></div></label></div>
+    </div></div>`);v.append(add);
+
+  // segmented switch
+  add.querySelectorAll("#seg button").forEach(b=>b.onclick=()=>{
+    add.querySelectorAll("#seg button").forEach(x=>x.classList.toggle("on",x===b));
+    add.querySelector("#pane-code").style.display=b.dataset.pane==="code"?"":"none";
+    add.querySelector("#pane-invite").style.display=b.dataset.pane==="invite"?"":"none";
+  });
+
+  // By code
+  const doAdd=async()=>{const code=add.querySelector("#code").value.trim();if(!code)return;try{const r=await api("/api/friends/add",{json:{code}});add.querySelector("#code").value="";snack(r.sent?`Request sent to ${r.to} — they'll approve it`:`Couldn't reach ${r.to||"them"} — are they online?`,!r.sent);}catch(e){snack(e.message,true);}};
+  add.querySelector("#addbtn").onclick=doAdd;
+  add.querySelector("#code").addEventListener("keydown",e=>{if(e.key==="Enter")doAdd();});
+
+  // By invite — create
+  add.querySelector("#mk").onclick=async()=>{try{const r=await api("/api/friends/token",{json:{ttlSeconds:86400}});add.querySelector("#itok").value=r.invite;add.querySelector("#ibox").style.display="";}catch(e){snack(e.message,true);}};
+  add.querySelector("#icopy").onclick=()=>copy(add.querySelector("#itok").value);
+  add.querySelector("#ifin").onclick=async()=>{try{await api("/api/friends/confirm",{json:{reply:add.querySelector("#irep").value.trim()}});snack("Friend added");render();}catch(e){snack(e.message,true);}};
+  // By invite — accept
+  add.querySelector("#ado").onclick=async()=>{try{
+      const rec=await api("/api/friends/receive",{json:{invite:add.querySelector("#ain").value.trim()}});
+      const r=await api("/api/friends/accept",{json:{giver:rec.request.ed25519}});
+      add.querySelector("#arep").value=r.reply;add.querySelector("#abox").style.display="";snack("Connected — send them the reply");render();
+    }catch(e){snack(e.message,true);}};
+  add.querySelector("#acopy").onclick=()=>copy(add.querySelector("#arep").value);
+
+  if(pending.length){const p=el(`<div class="card"><h2>Pending</h2>${pending.map(x=>`<div class="row"><div class="avatar">${initial(x.peer.label)}</div><div class="grow"><div class="name">${esc(x.peer.label)}</div></div><button class="btn tonal sm" data-g="${esc(x.peer.ed25519)}">Accept</button></div>`).join("")}</div>`);v.append(p);
+    p.querySelectorAll("[data-g]").forEach(b=>b.onclick=async()=>{try{const r=await api("/api/friends/accept",{json:{giver:b.dataset.g}});if(r.delivered){snack("Accepted — you're now friends");}else{copy(r.reply);snack("Accepted — reply copied, send it back to finish");}render();}catch(e){snack(e.message,true);}});}
+}
+
+// ---------- Files ----------
+async function Files(v){
+  const c=el(`<div class="card"><h2>Shared files</h2>
+    <div class="row" style="border:0;padding-bottom:.5rem"><input type="file" id="f" style="border:0;padding:.4rem 0"><button class="btn filled" id="up">Upload</button></div>
+    <div id="l" class="empty">Loading…</div></div>`);v.append(c);
+  c.querySelector("#up").onclick=async()=>{const f=c.querySelector("#f").files[0];if(!f){snack("Pick a file first");return;}const fd=new FormData();fd.append("file",f);try{await fetch("/api/files",{method:"POST",body:fd});snack("Uploaded");render();}catch(e){snack(e.message,true);}};
+  try{const d=await api("/api/files");
+    c.querySelector("#l").outerHTML=`<div id="l">${d.files.map(f=>`<div class="row"><div class="avatar">${ICONS.download}</div><div class="grow"><div class="name"><a href="/api/files/${f.id}/download">${esc(f.name)}</a></div><div class="meta">${(f.size/1024).toFixed(1)} KB</div></div><button class="btn danger sm" data-del="${f.id}">Delete</button></div>`).join("")||`<div class="empty">No files shared yet</div>`}</div>`;
+    c.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{try{await api("/api/files/"+b.dataset.del,{method:"DELETE"});render();}catch(e){snack(e.message,true);}});
+  }catch(e){snack(e.message,true);}
+}
+
+// ---------- Chat ----------
+async function Chat(v){
+  let friends=[];try{friends=(await api("/api/friends")).friends;}catch(e){snack(e.message,true);}
+  if(!friends.length){v.append(el(`<div class="card"><h2>Messages</h2><div class="empty">Add a friend first to start chatting.</div></div>`));return;}
+  const c=el(`<div class="card"><h2>Messages</h2>
+    <label class="f"><span>Conversation</span><select id="peer">${friends.map(f=>`<option value="${esc(f.peer.ed25519)}">${esc(f.peer.label)}</option>`).join("")}</select></label>
+    <div class="thread" id="th"></div>
+    <div class="composer"><input id="body" placeholder="Message…" autocomplete="off"><button class="btn filled" id="send">Send</button></div></div>`);v.append(c);
+  const sel=c.querySelector("#peer");
+  async function load(){try{const d=await api("/api/messages?peer="+encodeURIComponent(sel.value));c.querySelector("#th").innerHTML=d.thread.map(m=>`<div class="bubble ${m.dir}">${esc(m.body)}<div class="t">${new Date(m.ts).toLocaleTimeString()}</div></div>`).join("")||`<div class="empty">No messages yet</div>`;c.querySelector("#th").scrollTop=1e9;}catch(e){snack(e.message,true);}}
+  sel.onchange=load;load();
+  const send=async()=>{const body=c.querySelector("#body").value.trim();if(!body)return;try{const r=await api("/api/messages",{json:{peer:sel.value,body}});c.querySelector("#body").value="";if(!r.delivered)snack("Sent — friend is offline");load();}catch(e){snack(e.message,true);}};
+  c.querySelector("#send").onclick=send;c.querySelector("#body").addEventListener("keydown",e=>{if(e.key==="Enter")send();});
+}
+
+// ---------- Admin ----------
+async function Admin(v){
+  // One-time first-run reveal: the auto-generated admin token, shown here the first
+  // time anyone opens /admin, then gone server-side. Save it now or read the console.
+  if(firstRunToken){
+    const fr=el(`<div class="card" style="border-color:var(--primary)"><h2>Save your admin token</h2>
+      <p class="sub">This is the password that unlocks managing this node. It's shown <b>once</b> — right now — then removed from the server. Save it somewhere safe; you've already been signed in on this browser.</p>
+      <div class="row" style="border:0"><div class="avatar">${ICONS.key}</div><div class="grow"><div class="name key" data-copy="${esc(firstRunToken)}" style="font-family:ui-monospace,Menlo,monospace;word-break:break-all">${esc(firstRunToken)}</div><div class="meta">enter it at the lock if you sign in elsewhere</div></div><button class="btn tonal sm" data-copy="${esc(firstRunToken)}">Copy</button><button class="btn text sm" id="frdone">I've saved it</button></div></div>`);v.append(fr);
+    fr.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(b.dataset.copy));
+    fr.querySelector("#frdone").onclick=()=>{firstRunToken=null;render();};
+  }
+  const gc=el(`<div class="card"><h2>Internet access</h2><p class="sub">The island is sealed by default. To open the gate, enter the special prompt for Llama — your secure key holder. (To <i>unlock</i> admin itself, use the lock in the top bar.)</p>
+    <label class="f"><span>Prompt for Llama</span><input id="canary" placeholder="enter the prompt" autocomplete="off"></label>
+    <div class="row" style="border:0"><span class="chip island" id="gs"><span class="dot"></span>…</span><span class="grow"></span><button class="btn filled" id="open">Open gate</button><button class="btn text" id="close">Close</button></div>
+    <div id="log" class="sub" style="margin-top:.75rem"></div></div>`);v.append(gc);
+  const gstat=async()=>{try{const g=await api("/api/gate");const on=g.state==="internet";const c=gc.querySelector("#gs");c.className="chip "+(on?"internet":"island");c.innerHTML=`<span class="dot"></span>${on?"Internet":"Island"}`;}catch{}};
+  const glog=async()=>{try{const l=await api("/admin/gate/log");gc.querySelector("#log").innerHTML=l.log.slice(-5).reverse().map(e=>`${new Date(e.at).toLocaleTimeString()} · <b>${esc(e.action)}</b> ${esc(e.reason||"")}`).join("<br>");}catch{}};
+  gstat();glog();
+  gc.querySelector("#open").onclick=async()=>{const text=gc.querySelector("#canary").value.trim();if(!text){snack("Enter the prompt for Llama",true);return;}try{const m=await api("/admin/canary/mint",{json:{text}});const r=await api("/admin/canary",{json:{blob:m.blob}});snack(r.opened?"Gate opened":"Denied: "+r.reason,!r.opened);gstat();glog();refreshGate();}catch(e){snack("Needs the admin app in production",true);}};
+  gc.querySelector("#close").onclick=async()=>{try{await api("/admin/gate/close",{method:"POST"});snack("Gate closed");gstat();glog();refreshGate();}catch(e){snack(e.message,true);}};
+
+  const fc=el(`<div class="card"><h2>Manage friendships</h2><p class="sub">Remove a friendship.</p><div id="l" class="empty">Loading…</div></div>`);v.append(fc);
+  try{const d=await api("/admin/friends");
+    fc.querySelector("#l").outerHTML=`<div id="l">${d.friends.map(f=>`<div class="row"><div class="avatar">${initial(f.peer.label)}</div><div class="grow"><div class="name">${esc(f.peer.label)}</div><div class="meta key" data-copy="${esc(f.peer.ed25519)}" title="click to copy full key">${esc(f.peer.ed25519.slice(0,24))}…</div></div><button class="btn danger sm" data-del="${esc(f.peer.ed25519)}">Remove</button></div>`).join("")||`<div class="empty">No friendships</div>`}</div>`;
+    fc.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(b.dataset.copy));
+    fc.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friendship?"))return;try{await api("/admin/friends/"+encodeURIComponent(b.dataset.del),{method:"DELETE"});render();}catch(e){snack(e.message,true);}});
+  }catch(e){fc.querySelector("#l").innerHTML=`<div class="empty">${esc(e.message)}</div>`;}
+}
+
+// ---------- Security (admin-only, collector node only): the mesh IDS feed ----------
+async function Security(v){
+  const c=el(`<div class="card"><h2>Security</h2><p class="sub">fail2ban blocks and degraded links across every node.</p><div id="b" class="empty">Loading…</div></div>`);v.append(c);
+  try{
+    const d=await api("/admin/events");
+    const rows=d.nodes.flatMap(n=>n.events.map(e=>({...e,node:n.label,at:n.at})));
+    rows.sort((a,b)=>b.at.localeCompare(a.at));
+    c.querySelector("#b").outerHTML=`<div id="b">${rows.length?rows.map(e=>`<div class="row"><div class="avatar">${e.kind==="fail2ban"?ICONS.block:ICONS.alert}</div><div class="grow"><div class="name">${esc(e.subject)} <span class="meta">· ${esc(e.kind)}</span></div><div class="meta">${esc(e.detail)} — on ${esc(e.node)} · ${new Date(e.at).toLocaleString()}</div></div></div>`).join(""):`<div class="empty">No events reported yet</div>`}</div>`;
+  }catch(e){snack(e.message,true);}
+}
+
+// ---------- Guide (use guide for base + admin users) ----------
+function Guide(v){
+  v.append(el(`<div class="hero island"><div class="eyebrow">USE GUIDE</div><div class="htitle">How island works</div><div class="hsub">A private network for you and your friends. Everything below explains how to use it — first for everyone, then for admins.</div></div>`));
+
+  v.append(el(`<div class="card"><h2>What is island?</h2>
+    <p class="sub">island is a private network — your own little internet shared with friends. By default there's <b>no public internet</b>: just your group, talking and sharing directly and privately. The banner on Home shows whether you're in <b>island mode</b> (green — private, no internet) or have <b>internet access</b> (blue — open temporarily).</p></div>`));
+
+  v.append(el(`<div class="card"><h2>For everyone</h2>
+    <h3>Add a friend</h3>
+    <p class="sub">You only connect to people you both agree to — nobody can add you without your OK.</p>
+    <ul>
+      <li><b>By code (easiest):</b> ask a friend for their code (their “your friend code” at the top of Friends), then Friends → <b>Add a friend</b> → <b>By code</b> → paste it → <b>Add</b>. They approve and you're connected.</li>
+      <li><b>By invite (offline):</b> Friends → <b>Add a friend</b> → <b>By invite</b>. Either create an invite to send (then paste their reply), or paste an invite you got and send back the reply.</li>
+    </ul>
+    <h3>See or remove friends</h3>
+    <ul>
+      <li>Press a friend's <b>Key</b> to view or copy their full identity key — handy to confirm it's really them.</li>
+      <li><b>Remove</b> instantly takes away their access to your node (one-sided — it's your choice).</li>
+    </ul>
+    <h3>Share files</h3>
+    <p class="sub">Files → choose a file → <b>Upload</b>. Everyone on the island can see and download shared files; <b>Delete</b> removes one.</p>
+    <h3>Chat</h3>
+    <p class="sub">Chat → pick a friend → type a message. Messages are private and encrypted — only you and that friend can read them.</p>
+    <h3>Your code &amp; dark mode</h3>
+    <ul>
+      <li>The “you” row at the top of Friends shows <b>your</b> code — Copy it to hand out.</li>
+      <li>Use the theme toggle (top right) to switch between light and dark.</li>
+    </ul>
+  </div>`));
+
+  if(ADMIN) v.append(el(`<div class="card"><h2>For admins</h2>
+    <p class="sub">Admins manage a node: who's connected, and whether the island can reach the internet.</p>
+    <h3>The admin token (your manage password)</h3>
+    <p class="sub">The <b>admin token</b> is simply the password for managing this device — opening the internet gate, removing friendships, settings. You don't have to invent it: the node creates a strong one for you the first time it starts. You just need to <b>save it once</b>.</p>
+    <h3>First time: get signed in</h3>
+    <ul>
+      <li><b>1 · Open <code>/admin</code>.</b> On a brand‑new node, the token appears right at the top of this page in a highlighted card — you can't miss it.</li>
+      <li><b>2 · Save it.</b> Press <b>Copy</b> and paste it somewhere safe (a password manager or a note). For your security it's shown <b>only this one time</b>, then erased from the node. If you miss it, it's also printed in the node's start‑up log and stored on the device.</li>
+      <li><b>3 · You're already in.</b> That first visit unlocks this browser automatically — no typing. The <b>lock</b> button in the top bar turns <b>green</b> to show you're signed in.</li>
+    </ul>
+    <p class="sub"><i>Why only once?</i> Until someone saves it, anyone who opened this page could read the token — so the node hands it to the first person setting it up, then locks it away. That's why doing your setup at <code>/admin</code> first is the easy, safe path.</p>
+    <h3>Signing in again, or on another device</h3>
+    <p class="sub">Already saved it? To sign in anywhere — your phone, another computer — open <code>/admin</code>, click the <b>lock</b> in the top bar, and paste the token. Green lock = you're in; click it again to change or clear it. <i>(Advanced: a tech‑savvy admin can set a chosen token on the device as <code>ISLAND_ADMIN_TOKEN</code>; in the demo there's no token at all, so admin is open.)</i></p>
+    <h3>Manage friendships</h3>
+    <p class="sub">Admin → Manage friendships → <b>Remove</b>. You can remove any friendship, but you can never <i>force</i> one — that needs both people's keys. Security by design.</p>
+    <h3>The internet gate</h3>
+    <ul>
+      <li>The island is sealed by default (island mode).</li>
+      <li>Admin → <b>Internet access</b> → enter the <b>special prompt for Llama</b> → <b>Open gate</b>. Llama (the node's secure key holder) reads it and, if it approves, opens internet access for <b>45 minutes</b>, then closes automatically. <b>Close</b> ends it early.</li>
+      <li>Every screen's banner shows the current state.</li>
+    </ul>
+    <h3>Managing a headless device (e.g. a Pi with no screen)</h3>
+    <ul>
+      <li><b>From a browser:</b> on another island device, open <code>http://&lt;node-address&gt;:8787/admin</code>, unlock with the admin token, and manage it normally.</li>
+      <li><b>From a terminal (SSH):</b> <code>islandd friend invite</code> / <code>accept</code> / <code>confirm</code> / <code>list</code>.</li>
+    </ul>
+  </div>`));
+}
+
+function applyTheme(t){document.documentElement.setAttribute("data-theme",t);document.getElementById("theme").innerHTML=t==="dark"?ICONS.sun:ICONS.moon;}
+let theme=localStorage.getItem("theme")||(matchMedia&&matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");
+applyTheme(theme);
+document.getElementById("theme").onclick=()=>{theme=theme==="dark"?"light":"dark";localStorage.setItem("theme",theme);applyTheme(theme);};
+// The admin lock lives ONLY on /admin (it's an admin concern). On the user app there's
+// no lock; once unlocked at /admin the token is in localStorage and api() sends it.
+let refreshAuth=()=>{};
+if(ADMIN){
+  const LOCK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+  const UNLOCK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="11" width="16" height="9" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.6-1.6"/></svg>';
+  const b=el('<button class="iconbtn lockbtn" id="auth"></button>');
+  document.querySelector(".bar").insertBefore(b,document.getElementById("who"));
+  refreshAuth=()=>{const set=!!adminTok();b.innerHTML=(set?UNLOCK:LOCK)+"<span>"+(set?"Admin":"Unlock admin")+"</span>";b.classList.toggle("on",set);b.title=set?"Admin unlocked — click to change or clear":"Admin locked — click to enter the admin token";};
+  b.onclick=()=>{const v=prompt("Admin token — the password that unlocks managing this node (friends, gate, settings). Set on the device as ISLAND_ADMIN_TOKEN; leave blank in demo mode.",adminTok());if(v!==null){localStorage.setItem("adminTok",v.trim());refreshAuth();snack(v.trim()?"Admin unlocked":"Admin cleared");render();}};
+  refreshAuth();
+}
+// First /admin visit on a fresh node: claim the one-time token reveal (server consumes
+// it). If we get one, sign this browser in and let Admin() show it once to save.
+async function claimFirstRun(){
+  if(!ADMIN||adminTok())return;
+  try{const r=await api("/admin/firstrun");if(r&&r.token){firstRunToken=r.token;localStorage.setItem("adminTok",r.token);refreshAuth();}}catch{}
+}
+(async()=>{try{const h=await api("/api/health");document.getElementById("who").textContent=(ADMIN?"admin · ":"")+(h.mock?"demo":"node")+" · v"+h.version;if(ADMIN&&h.events)TABS.splice(1,0,["Security",Security]);}catch{}await claimFirstRun();refreshGate();render();})();
+</script>
+</body>
+</html>

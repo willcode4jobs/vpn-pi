@@ -34,3 +34,12 @@ coverage.out
 
 # macOS / cloud-sync conflict copies (e.g. "main 2.py")
 * [0-9].*
+
+# LLM model weights — large + license-gated (Meta Llama). Download/convert happens
+# OUTSIDE this repo; only the finished .gguf is scp'd to vega. Guarded here so a stray
+# download inside the tree can't stage gigabytes of license-encumbered weights.
+*.gguf
+*.safetensors
+*.pth
+models/
+llama-build/

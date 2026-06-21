@@ -47,7 +47,9 @@ func run() error {
 		return err
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// JSON so each line is machine-parseable in journald — islandd's IDS collector
+	// reads `journalctl -u wg-selfheal -o json` and parses these state-change events.
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	cfg := heal.DefaultConfig()
 	// Interface-bounce isn't wired yet (needs a privileged wg-quick restart,
