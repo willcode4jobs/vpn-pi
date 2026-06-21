@@ -133,3 +133,51 @@ export function mockWg(iface = "wg0"): WgStatus {
     ],
   };
 }
+
+// --- wg-selfheal daemon: current per-peer health from its journald events ----
+//
+// The Go daemon logs JSON state-transition events (ok/stale/degraded) to journald.
+// We replay them (last transition per peer wins → current state) and surface the
+// peers that are not healthy, exactly like the fail2ban Ban/Unban replay. No socket,
+// no privilege beyond systemd-journal. Degrades to [] if the daemon isn't running.
+
+export interface DaemonPeer {
+  peer: string; // the daemon's (short) peer key
+  state: "stale" | "degraded" | string;
+  endpoint: string;
+}
+
+// The daemon is a systemd TEMPLATE unit — wg-selfheal@spoke / wg-selfheal@relay — so
+// match the instance glob, not the bare name (plain "wg-selfheal" matches nothing and
+// the feed stays silently empty). The glob also catches a non-templated unit if one is
+// ever used. Overridable per node via ISLAND_SELFHEAL_UNIT. This is read-only journald
+// access; if the daemon isn't installed yet, journalctl returns nothing and readDaemon
+// degrades to [], so the daemon can be dropped in any time after deployment.
+const SELFHEAL_UNIT = process.env.ISLAND_SELFHEAL_UNIT || "wg-selfheal@*";
+const DAEMON_ARGV = ["journalctl", "-u", SELFHEAL_UNIT, "-o", "json", "--since", "-24h", "-n", "300"];
+
+export async function readDaemon(run: Runner = runCmd): Promise<DaemonPeer[]> {
+  const out = await run(DAEMON_ARGV);
+  if (!out) return [];
+
+  const latest = new Map<string, { state: string; endpoint: string }>();
+  for (const line of out.split("\n")) {
+    if (!line.trim()) continue;
+    let evt: { msg?: string; peer?: string; to?: string; endpoint?: string };
+    try {
+      evt = JSON.parse(String(JSON.parse(line).MESSAGE ?? "")); // journald MESSAGE is the daemon's JSON line
+    } catch {
+      continue;
+    }
+    if (evt.msg !== "state change" || !evt.peer) continue;
+    latest.set(evt.peer, { state: String(evt.to ?? ""), endpoint: String(evt.endpoint ?? "") });
+  }
+
+  return [...latest]
+    .filter(([, v]) => v.state && v.state !== "ok") // recovered/ok → healthy, drop
+    .map(([peer, v]) => ({ peer, state: v.state, endpoint: v.endpoint }));
+}
+
+export function mockDaemon(): DaemonPeer[] {
+  return [{ peer: "sirius-m…", state: "degraded", endpoint: "203.0.113.9:51820" }];
+}

@@ -8,9 +8,12 @@
 
 import type { Server } from "bun";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { homedir, networkInterfaces } from "node:os";
 import { join } from "node:path";
+import { runCli } from "./cli.ts";
 import { CanaryError, makeCanary, verifyCanary } from "./core/canary.ts";
+import { decodeInvite, decodeReply, encodeInvite, encodeReply, fingerprint } from "./core/friendcode.ts";
 import { fromB64, toB64 } from "./core/codec.ts";
 import { VerificationError, type VerifyKeyFor } from "./core/envelope.ts";
 import { FriendBook, FriendError } from "./core/friends.ts";
@@ -23,8 +26,17 @@ import {
   NoopGateExec,
   ShellGateExec,
 } from "./core/gate.ts";
-import { generateIdentity, loadIdentity, type Identity } from "./core/identity.ts";
+import { generateIdentity, loadIdentity, saveIdentity, type Identity } from "./core/identity.ts";
 import { MessageBook, openMessage, sealMessage } from "./core/messages.ts";
+import {
+  announce,
+  registerAnnounce,
+  RegistryError,
+  RegistryStore,
+  type RegistryRecord,
+  resolve,
+} from "./core/registry.ts";
+import { collectLocal, EventError, EventStore, ingest, report, type EventReport } from "./core/events.ts";
 import {
   buildShare,
   FileNotFound,
@@ -32,8 +44,9 @@ import {
   type FileShare,
 } from "./core/share.ts";
 import { getSodium } from "./core/sodium.ts";
-import { mockFail2ban, mockWg, readFail2ban, readWg } from "./core/sysinfo.ts";
-import { createHash, timingSafeEqual } from "node:crypto";
+import { mockDaemon, mockFail2ban, mockWg, readDaemon, readFail2ban, readWg } from "./core/sysinfo.ts";
+import { manageOk, tokenOk } from "./core/auth.ts";
+import { AttemptLimiter } from "./core/ratelimit.ts";
 // The web UI is bundled into the binary as text, so `bun build --compile` stays a
 // single self-contained file (no separate frontend deploy). Served at / and /admin.
 import indexHtml from "../web/index.html" with { type: "text" };
@@ -43,6 +56,8 @@ const MAX_UPLOAD = 25 * 1024 * 1024; // island share, not a CDN
 
 /** Caller is authenticated but not authorized for the share (not a friend). */
 class Forbidden extends Error {}
+/** Too many failed auth attempts from this source — brute-force lockout. */
+class RateLimited extends Error {}
 
 interface Args {
   mock: boolean; // in-memory everything; safe to run on a laptop with no mesh
@@ -50,8 +65,22 @@ interface Args {
   port: number;
 }
 
+/** Auto-detect the address to bind: explicit wins, then mock=loopback, then the wg
+ *  interface's own address (so `islandd` needs no --host), else loopback with a warning. */
+function resolveHost(explicit: string, mock: boolean, wgIface: string): string {
+  if (explicit) return explicit;
+  if (mock) return "127.0.0.1";
+  const addrs = networkInterfaces()[wgIface] ?? [];
+  const v4 = addrs.find((a) => a.family === "IPv4" && !a.internal);
+  const v6 = addrs.find((a) => a.family === "IPv6" && !a.internal);
+  if (v4) return v4.address;
+  if (v6) return v6.address;
+  console.warn(`⚠ ${wgIface} has no address — binding 127.0.0.1. Pass --host or ISLAND_HOST to override.`);
+  return "127.0.0.1";
+}
+
 function parseArgs(argv: string[]): Args {
-  const args: Args = { mock: false, host: "", port: 8787 };
+  const args: Args = { mock: false, host: "", port: Number(process.env.ISLAND_PORT ?? 8787) };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case "--mock":
@@ -82,23 +111,64 @@ interface Ctx {
   share: FileShare;
   msgs: MessageBook;
   gate: Gate; // the canary-driven internet gate (default island)
+  registry: RegistryStore | null; // friend-code directory (polaris; ISLAND_REGISTRY=1)
+  registryUrl: string; // where this node announces/resolves codes (ISLAND_REGISTRY_URL)
+  eventStore: EventStore | null; // IDS collector (polaris; ISLAND_EVENTS=1)
+  eventsUrl: string; // where this node reports security events (ISLAND_EVENTS_URL)
   adminVerify: VerifyKeyFor; // resolves allowlisted admin Ed25519 keys
   canaryKeyword: string;
   canaryFreshnessS: number;
   mockAdmin: Identity | null; // --mock only: drives POST /admin/canary/mint
   adminToken: string; // gates the /admin surface (empty + prod = closed)
+  dataDir: string; // where keys/token/marker live (the first-run reveal consumes a marker here)
+  opToken: string; // operator token — lets a headless node be managed over the mesh
+  authLimiter: AttemptLimiter; // brute-force lockout on failed admin/operator auth
   persist: () => Promise<void>;
+}
+
+/** Name of the one-time reveal marker. While it exists, GET /admin/firstrun hands the
+ *  auto-generated admin token to the first visitor of /admin, then deletes it (the
+ *  token gets to the sysadmin exactly where they go first, then is gone). */
+const FIRSTRUN_MARKER = "admin.token.fresh";
+
+/** Resolve the admin token: env var wins; else reuse a saved one, or generate + print
+ *  a strong one in the data dir. A freshly generated token also drops a one-time reveal
+ *  marker so /admin can surface it once. --mock returns "" (admin is open). */
+async function provisionAdminToken(mock: boolean, dataDir: string): Promise<string> {
+  if (mock) return "";
+  const env = process.env.ISLAND_ADMIN_TOKEN ?? "";
+  if (env) {
+    if (env.length < 16) console.warn("⚠ ISLAND_ADMIN_TOKEN is short — use a long random value.");
+    return env;
+  }
+  const tokPath = join(dataDir, "admin.token");
+  if (existsSync(tokPath)) return (await readFile(tokPath, "utf8")).trim();
+  const s = await getSodium();
+  const tok = s.to_base64(s.randombytes_buf(18), s.base64_variants.URLSAFE_NO_PADDING);
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(tokPath, tok, { mode: 0o600 });
+  await writeFile(join(dataDir, FIRSTRUN_MARKER), "", { mode: 0o600 }); // shown once at /admin
+  console.log(`\n  Admin token:  ${tok}\n  Shown once when you first open /admin, then removed.\n  Also saved to ${tokPath}\n`);
+  return tok;
 }
 
 async function boot(args: Args): Promise<Ctx> {
   await getSodium(); // fail fast if the crypto library can't initialise
 
-  const dataDir = process.env.ISLAND_DATA_DIR ?? "/var/lib/islandd";
+  // No-root default: a personal node just works out of ~/.islandd (the systemd unit
+  // overrides this with /var/lib/islandd).
+  const dataDir = process.env.ISLAND_DATA_DIR ?? join(homedir(), ".islandd");
   const label = process.env.ISLAND_LABEL ?? (args.mock ? "mock-node" : "node");
-  const wg0 = process.env.ISLAND_WG0 ?? (args.mock ? "127.0.0.1" : "");
+  // This node's reachable mesh address — used in tokens, registry records, and as the
+  // bind address. ISLAND_WG0 wins; else auto-detect the wg0 interface.
+  const wg0 = process.env.ISLAND_WG0 || resolveHost("", args.mock, process.env.ISLAND_WG_IFACE ?? "wg0");
 
   const peerPort = Number(process.env.ISLAND_PEER_PORT ?? args.port);
   const wgIface = process.env.ISLAND_WG_IFACE ?? "wg0";
+
+  // Admin token: env wins; else reuse/auto-generate one in the data dir and print it,
+  // so a fresh node has working (token-gated) admin with zero config. (--mock = open.)
+  const adminToken = await provisionAdminToken(args.mock, dataDir);
 
   // ---- canary gate setup (Phase F) ----
   const canaryKeyword = process.env.ISLAND_CANARY_KEYWORD ?? "GREEN18";
@@ -125,6 +195,19 @@ async function boot(args: Args): Promise<Ctx> {
     : new ShellGateExec(process.env.ISLAND_GATE_CMD ?? "sudo /usr/local/sbin/island-gate");
   const gate = new Gate(llama, gateExec, gateTtlS);
 
+  // ---- friend-code registry (Phase I — polaris). Enabled on the registry node, and
+  // always in --mock so the demo can announce+resolve against itself. ----
+  const registryEnabled = args.mock || /^(1|true|yes)$/i.test(process.env.ISLAND_REGISTRY ?? "");
+  const registry = registryEnabled
+    ? new RegistryStore(args.mock ? ":memory:" : join(dataDir, "registry.db"))
+    : null;
+
+  // ---- IDS / security collector (Phase J — polaris). On in --mock for the demo. ----
+  const eventsEnabled = args.mock || /^(1|true|yes)$/i.test(process.env.ISLAND_EVENTS ?? "");
+  const eventStore = eventsEnabled
+    ? new EventStore(args.mock ? ":memory:" : join(dataDir, "events.db"))
+    : null;
+
   let identity: Identity;
   let book: FriendBook;
   let share: FileShare;
@@ -139,7 +222,11 @@ async function boot(args: Args): Promise<Ctx> {
     persist = async () => {};
   } else {
     const identityDir = process.env.ISLAND_IDENTITY_DIR ?? join(dataDir, "identity");
-    identity = await loadIdentity(identityDir); // never generated here — William's keys
+    if (!existsSync(join(identityDir, "ed25519.key"))) {
+      await saveIdentity(identityDir, await generateIdentity()); // first-run auto-provision
+      console.log(`generated this node's identity in ${identityDir}`);
+    }
+    identity = await loadIdentity(identityDir);
     const bookPath = join(dataDir, "friends.json");
     const msgPath = join(dataDir, "messages.json");
     book = existsSync(bookPath)
@@ -168,55 +255,96 @@ async function boot(args: Args): Promise<Ctx> {
     share,
     msgs,
     gate,
+    registry,
+    registryUrl: process.env.ISLAND_REGISTRY_URL ?? "",
+    eventStore,
+    eventsUrl: process.env.ISLAND_EVENTS_URL ?? "",
     adminVerify,
     canaryKeyword,
     canaryFreshnessS,
     mockAdmin,
-    adminToken: process.env.ISLAND_ADMIN_TOKEN ?? "",
+    adminToken,
+    dataDir,
+    opToken: process.env.ISLAND_OP_TOKEN ?? "",
+    // 10 failed auth attempts / 5 min per source IP, then locked out (429).
+    authLimiter: new AttemptLimiter(10, 5 * 60_000),
     persist,
   };
 }
 
-const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
+/**
+ * Is this request from the node's operator? mock / loopback / a valid op-token, OR a
+ * valid ADMIN token — admin is a superset of operator, so the one admin credential
+ * unlocks both operator actions and the /admin surface (a single key per node).
+ */
+function isOperator(req: Request, server: Server<undefined>, ctx: Ctx): boolean {
+  const ip = server.requestIP(req)?.address ?? "";
+  return manageOk(
+    ip,
+    req.headers.get("x-op-token") ?? "",
+    req.headers.get("x-admin-token") ?? "",
+    { mock: ctx.args.mock, opToken: ctx.opToken, adminToken: ctx.adminToken },
+  );
+}
 
 /**
  * Authorize a file-share request and return the adder's verified identity (`node`).
- * Membership = a friend of this node (vega). WireGuard pins each peer's wg0 IP to its
- * key, so the source address is real per-peer auth. Loopback = the local operator.
+ * The operator is always allowed; otherwise membership = a friend of this node
+ * (WireGuard pins each peer's wg0 IP to its key, so the source address is real auth).
  */
 function authorizeShare(req: Request, server: Server<undefined>, ctx: Ctx): string {
-  if (ctx.args.mock) return ctx.label; // laptop demo: no mesh, allow local
+  if (isOperator(req, server, ctx)) return ctx.selfEd;
   const ip = server.requestIP(req)?.address ?? "";
-  if (LOOPBACK.has(ip)) return ctx.selfEd; // operator on the host itself
   const friend = ctx.book.friendByWg0(ip);
   if (!friend) throw new Forbidden(`not a friend: ${ip}`);
   return friend.peer.ed25519;
 }
 
-/** Operator-only endpoints (read your threads / send as this node): loopback or mock. */
+/** Operator-only endpoints. Operator = loopback, --mock, or a valid op/admin token.
+ *  Failed attempts are rate-limited per IP (brute-force lockout). */
 function requireOperator(req: Request, server: Server<undefined>, ctx: Ctx): void {
-  if (ctx.args.mock) return;
-  const ip = server.requestIP(req)?.address ?? "";
-  if (!LOOPBACK.has(ip)) throw new Forbidden("operator-only endpoint");
+  const ip = server.requestIP(req)?.address ?? "?";
+  if (ctx.authLimiter.locked(ip)) throw new RateLimited("too many attempts — try again later");
+  if (isOperator(req, server, ctx)) {
+    ctx.authLimiter.reset(ip);
+    return;
+  }
+  ctx.authLimiter.fail(ip);
+  throw new Forbidden("operator-only endpoint");
 }
 
-const sha256 = (s: string): Buffer => createHash("sha256").update(s).digest();
-
-/** Gate the /admin surface with the admin token (constant-time). Open in --mock so the
- *  laptop demo works; fail-closed in prod if no token is configured. */
-function requireAdmin(req: Request, ctx: Ctx): void {
+/** Gate the /admin surface with the admin token (constant-time + rate-limited). Open in
+ *  --mock so the laptop demo works; fail-closed in prod if no token is configured. */
+function requireAdmin(req: Request, server: Server<undefined>, ctx: Ctx): void {
   if (ctx.args.mock) return;
   if (!ctx.adminToken) throw new Forbidden("admin token not configured");
-  const presented = req.headers.get("x-admin-token") ?? "";
-  if (!timingSafeEqual(sha256(presented), sha256(ctx.adminToken))) {
+  const ip = server.requestIP(req)?.address ?? "?";
+  if (ctx.authLimiter.locked(ip)) throw new RateLimited("too many attempts — try again later");
+  if (!tokenOk(req.headers.get("x-admin-token") ?? "", ctx.adminToken)) {
+    ctx.authLimiter.fail(ip);
     throw new Forbidden("bad admin token");
   }
+  ctx.authLimiter.reset(ip);
 }
 
-/** Where to deliver a message to a friend. wg0 may be "ip" or "ip:port" (tests). */
-function peerInbound(wg0: string, defaultPort: number): string {
+/** Build a URL to reach a peer over the mesh. wg0 may be "ip" or "ip:port" (tests). */
+function peerUrl(wg0: string, defaultPort: number, path: string): string {
   const hostPort = /^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(wg0) ? wg0 : `${wg0}:${defaultPort}`;
-  return `http://${hostPort}/api/messages/inbound`;
+  return `http://${hostPort}${path}`;
+}
+
+/** POST JSON to a peer over the mesh, returning whether it was delivered (best-effort). */
+async function deliver(wg0: string, port: number, path: string, body: unknown): Promise<boolean> {
+  try {
+    const r = await fetch(peerUrl(wg0, port, path), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function readJson(req: Request): Promise<Record<string, unknown>> {
@@ -233,7 +361,13 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
   const method = req.method;
 
   if (method === "GET" && path === "/api/health") {
-    return Response.json({ ok: true, service: "islandd", version: VERSION, mock: ctx.args.mock });
+    return Response.json({
+      ok: true,
+      service: "islandd",
+      version: VERSION,
+      mock: ctx.args.mock,
+      events: !!ctx.eventStore, // is this node the IDS collector? (drives the admin Security tab)
+    });
   }
 
   // ---- home + gate (Phase E) ----
@@ -269,10 +403,38 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
     return Response.json({ state: gs.state, closes_at: gs.closesAt });
   }
 
+  // ---- friend-code registry (Phase I — polaris only). Public directory: any node
+  // announces its OWN signed record, anyone resolves a code. ----
+  if (ctx.registry && method === "POST" && path === "/registry/announce") {
+    const body = await readJson(req);
+    const code = await registerAnnounce(ctx.registry, body.record as RegistryRecord, String(body.sig));
+    return Response.json({ code });
+  }
+  if (ctx.registry && method === "GET") {
+    const m = path.match(/^\/registry\/resolve\/(.+)$/);
+    if (m) {
+      const record = ctx.registry.get(decodeURIComponent(m[1]!).toUpperCase());
+      if (!record) return new Response("code not found", { status: 404 });
+      return Response.json(record);
+    }
+  }
+
+  // ---- IDS / security events (Phase J — collector node only) ----
+  // Inbound (from a node, signature-verified): store its latest security snapshot.
+  if (ctx.eventStore && method === "POST" && path === "/events/report") {
+    await ingest(ctx.eventStore, (await readJson(req)) as unknown as EventReport);
+    return Response.json({ ok: true });
+  }
+  // Admin: the universal feed across all nodes.
+  if (ctx.eventStore && method === "GET" && path === "/admin/events") {
+    requireAdmin(req, server, ctx);
+    return Response.json({ nodes: ctx.eventStore.list() });
+  }
+
   // ---- admin: manage friendships (Phase G) ----
   // Full friendship view for the admin console.
   if (method === "GET" && path === "/admin/friends") {
-    requireAdmin(req, ctx);
+    requireAdmin(req, server, ctx);
     return Response.json({
       friends: ctx.book.listFriends(),
       pending: ctx.book.listPending(),
@@ -283,18 +445,33 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
   // delete but never forge (a friendship only exists via the verified handshake).
   const adminDel = path.match(/^\/admin\/friends\/(.+)$/);
   if (method === "DELETE" && adminDel) {
-    requireAdmin(req, ctx);
+    requireAdmin(req, server, ctx);
     const removed = ctx.book.revoke(decodeURIComponent(adminDel[1]!));
     if (!removed) return new Response("no such friend", { status: 404 });
     await ctx.persist();
     return new Response(null, { status: 204 });
   }
 
+  // ---- first-run admin token reveal ----
+  // Deliberately UNAUTHENTICATED: it hands the auto-generated token to whoever opens
+  // /admin first (a sysadmin's first stop), then consumes the marker so it's shown
+  // exactly once. Only ever returns an AUTO-PROVISIONED token: with --mock (no token)
+  // or an env-set ISLAND_ADMIN_TOKEN there is no marker, so this returns null and the
+  // operator's own secret is never echoed back. First-viewer-wins — see RUNBOOK.
+  if (method === "GET" && path === "/admin/firstrun") {
+    const marker = join(ctx.dataDir, FIRSTRUN_MARKER);
+    if (!ctx.adminToken || ctx.args.mock || !existsSync(marker)) {
+      return Response.json({ token: null });
+    }
+    await unlink(marker).catch(() => {}); // consume first, so a re-read can't re-reveal
+    return Response.json({ token: ctx.adminToken });
+  }
+
   // ---- canary gate (Phase F) — vega ----
   // Open the gate: crypto-gated by the canary itself (admin signature + seal), so the
   // admin app may call this remotely; the LLM then approves/denies.
   if (method === "POST" && path === "/admin/canary") {
-    requireAdmin(req, ctx); // coarse /admin gate; the canary signature is the real auth
+    requireAdmin(req, server, ctx); // coarse /admin gate; the canary signature is the real auth
     const body = await readJson(req);
     const canary = await verifyCanary(
       ctx.identity,
@@ -312,12 +489,12 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
   }
   // Gate audit log.
   if (method === "GET" && path === "/admin/gate/log") {
-    requireAdmin(req, ctx);
+    requireAdmin(req, server, ctx);
     return Response.json({ log: ctx.gate.log() });
   }
   // Manual early close (least privilege — closing is always safe).
   if (method === "POST" && path === "/admin/gate/close") {
-    requireAdmin(req, ctx);
+    requireAdmin(req, server, ctx);
     const gs = await ctx.gate.close("manual (admin)");
     return Response.json({ gate: { state: gs.state, closes_at: gs.closesAt } });
   }
@@ -336,8 +513,9 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
     return Response.json({ blob });
   }
 
-  // ---- friending (Phase B) ----
+  // ---- friending (Phase B) — operator-only (loopback / mock / op-token) ----
   if (method === "GET" && path === "/api/friends") {
+    requireOperator(req, server, ctx);
     return Response.json({
       friends: ctx.book.listFriends(),
       pending: ctx.book.listPending(),
@@ -345,29 +523,87 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
     });
   }
   if (method === "POST" && path === "/api/friends/token") {
+    requireOperator(req, server, ctx);
     const body = await readJson(req);
     const ttl = typeof body.ttlSeconds === "number" ? body.ttlSeconds : 86_400;
     const token = await ctx.book.issueToken(ttl);
     await ctx.persist();
-    return Response.json({ token });
+    return Response.json({ invite: await encodeInvite(token) }); // compact code, not JSON
   }
   if (method === "POST" && path === "/api/friends/receive") {
+    requireOperator(req, server, ctx);
     const body = await readJson(req);
-    const request = await ctx.book.receive(body.token as never);
+    // accept a compact invite code, or a raw token object (legacy)
+    const token = body.invite ? await decodeInvite(String(body.invite)) : (body.token as never);
+    const request = await ctx.book.receive(token);
     await ctx.persist();
     return Response.json({ request });
   }
   if (method === "POST" && path === "/api/friends/accept") {
+    requireOperator(req, server, ctx);
     const body = await readJson(req);
-    const accept = await ctx.book.accept(String(body.giver));
+    const giver = String(body.giver);
+    const blob = await ctx.book.accept(giver);
     await ctx.persist();
-    return Response.json({ accept });
+    // mesh path: deliver the accept straight back to the giver; paste path: they copy it
+    const wg0 = ctx.book.friend(giver)?.peer.wg0 ?? "";
+    const delivered = wg0 ? await deliver(wg0, ctx.peerPort, "/api/friends/accept-inbound", { accept: blob }) : false;
+    return Response.json({ reply: encodeReply(blob), delivered });
   }
   if (method === "POST" && path === "/api/friends/confirm") {
+    requireOperator(req, server, ctx);
     const body = await readJson(req);
-    const friend = await ctx.book.confirm(String(body.accept));
+    const accept = body.reply ? decodeReply(String(body.reply)) : String(body.accept);
+    const friend = await ctx.book.confirm(accept);
     await ctx.persist();
     return Response.json({ friend });
+  }
+  // ---- friend by code (Phase I-4) — resolve via registry, handshake over the mesh ----
+  // Operator: add a friend by their ISL-… code (resolve → send a signed request).
+  if (method === "POST" && path === "/api/friends/add") {
+    requireOperator(req, server, ctx);
+    if (!ctx.registryUrl) throw new FriendError("no registry configured (set ISLAND_REGISTRY_URL)");
+    const body = await readJson(req);
+    const record = await resolve(ctx.registryUrl, String(body.code)); // verifies code↔key
+    const token = await ctx.book.issueToken(86_400);
+    await ctx.persist();
+    const sent = await deliver(record.wg0, ctx.peerPort, "/api/friends/request", { token });
+    return Response.json({ ok: true, sent, to: record.label });
+  }
+  // Inbound (from a peer, crypto-gated): a signed friend request → becomes pending.
+  if (method === "POST" && path === "/api/friends/request") {
+    const body = await readJson(req);
+    const request = await ctx.book.receive(body.token as never); // verifies the signed token
+    await ctx.persist();
+    return Response.json({ ok: true, from: request.label });
+  }
+  // Inbound (from a peer, crypto-gated): the accept coming back to the initiator.
+  if (method === "POST" && path === "/api/friends/accept-inbound") {
+    const body = await readJson(req);
+    const friend = await ctx.book.confirm(String(body.accept)); // verifies it matches our offer
+    await ctx.persist();
+    return Response.json({ ok: true, friend: friend.peer.label });
+  }
+
+  // This node's own identity (full keys), so the operator can view/share/verify it.
+  if (method === "GET" && path === "/api/identity") {
+    requireOperator(req, server, ctx);
+    return Response.json({
+      code: await fingerprint(ctx.selfEd), // short shareable friend code (ISL-…)
+      ed25519: ctx.selfEd,
+      x25519: await toB64(ctx.identity.x25519.publicKey),
+      label: ctx.label,
+      wg0: ctx.wg0,
+    });
+  }
+  // Remove one of your own friendships (one-sided revoke). Operator action.
+  const friendDel = path.match(/^\/api\/friends\/(.+)$/);
+  if (method === "DELETE" && friendDel) {
+    requireOperator(req, server, ctx);
+    const removed = ctx.book.revoke(decodeURIComponent(friendDel[1]!));
+    if (!removed) return new Response("no such friend", { status: 404 });
+    await ctx.persist();
+    return new Response(null, { status: 204 });
   }
 
   // ---- messaging (Phase D) — direct P2P, sealed ----
@@ -389,17 +625,7 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
     const blob = await sealMessage(ctx.identity, friend.peer, text);
     ctx.msgs.append(peer, { dir: "out", from: ctx.selfEd, to: peer, body: text, ts: new Date().toISOString() });
     await ctx.persist();
-    let delivered = false;
-    try {
-      const r = await fetch(peerInbound(friend.peer.wg0, ctx.peerPort), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ blob }),
-      });
-      delivered = r.ok;
-    } catch {
-      delivered = false;
-    }
+    const delivered = await deliver(friend.peer.wg0, ctx.peerPort, "/api/messages/inbound", { blob });
     return Response.json({ ok: true, delivered });
   }
   // Receive a delivered message from a friend. Crypto is the gate (non-friend fails).
@@ -461,18 +687,29 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
 }
 
 function errorStatus(err: unknown): number {
+  if (err instanceof RateLimited) return 429;
   if (err instanceof FileNotFound) return 404;
   if (err instanceof Forbidden) return 403;
   if (err instanceof VerificationError) return 403; // untrusted message/canary signer
   if (err instanceof CanaryError) return 403; // invalid/replayed/stale canary
+  if (err instanceof RegistryError) return 400; // bad announce signature
+  if (err instanceof EventError) return 400; // bad event-report signature
   if (err instanceof FriendError) return 400;
   return 500;
 }
 
 async function main(): Promise<void> {
-  const args = parseArgs(Bun.argv.slice(2));
+  const argv = Bun.argv.slice(2);
+  // A leading non-flag word is a CLI command (e.g. `islandd friend invite`); it talks
+  // to the running daemon instead of starting a server. Flags (`--mock`) start the daemon.
+  if (argv[0] && !argv[0].startsWith("--")) {
+    await runCli(argv);
+    return;
+  }
+  const args = parseArgs(argv);
   const ctx = await boot(args);
-  const host = args.host || "127.0.0.1"; // prod binds wg0 via --host; mock -> loopback
+  // ctx.wg0 is the advertised mesh address (may be "ip:port" in tests); bind to the IP.
+  const host = (args.host || process.env.ISLAND_HOST || ctx.wg0).replace(/:\d+$/, "");
 
   const server = Bun.serve({
     hostname: host,
@@ -489,6 +726,25 @@ async function main(): Promise<void> {
   console.log(
     `islandd ${VERSION} listening on http://${server.hostname}:${server.port} (mock=${args.mock})`,
   );
+
+  // Auto-announce to the registry so this node is discoverable by its friend code.
+  if (ctx.registryUrl) {
+    announce(ctx.registryUrl, ctx.identity, ctx.wg0, ctx.label)
+      .then((code) => console.log(`announced to registry — your friend code: ${code}`))
+      .catch((e) => console.warn(`⚠ registry announce failed: ${(e as Error).message}`));
+  }
+
+  // Periodically push this node's local security events to the IDS collector (polaris).
+  if (ctx.eventsUrl) {
+    const push = async () => {
+      const [jails, wg, daemon] = ctx.args.mock
+        ? [mockFail2ban(), mockWg(ctx.wgIface), mockDaemon()]
+        : await Promise.all([readFail2ban(), readWg(ctx.wgIface), readDaemon()]);
+      await report(ctx.eventsUrl, ctx.identity, ctx.label, collectLocal(jails, wg, daemon));
+    };
+    push().catch(() => {});
+    setInterval(() => push().catch(() => {}), 60_000);
+  }
 }
 
 main();

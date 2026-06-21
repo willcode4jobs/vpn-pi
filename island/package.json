@@ -9,7 +9,12 @@
     "start": "bun run src/main.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "build": "bun build --compile --outfile islandd src/main.ts"
+    "build": "bun build --compile --outfile islandd src/main.ts",
+    "build:arm64": "bun build --compile --target=bun-linux-arm64 --outfile dist/islandd-arm64 src/main.ts",
+    "build:x64": "bun build --compile --target=bun-linux-x64-baseline --outfile dist/islandd-x64 src/main.ts",
+    "build:mac": "bun build --compile --target=bun-darwin-arm64 --outfile dist/islandd-mac src/main.ts",
+    "build:mac-intel": "bun build --compile --target=bun-darwin-x64-baseline --outfile dist/islandd-mac-intel src/main.ts",
+    "build:all": "bun run build:arm64 && bun run build:x64 && bun run build:mac"
   },
   "dependencies": {
     "libsodium-wrappers": "^0.7.15"

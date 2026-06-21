@@ -25,10 +25,13 @@ friending-based auth and an LLM-mediated internet gate.
 | E | home / sysinfo (fail2ban + wg status) | ✅ done |
 | F | gate + canary (`GREEN18`, Llama, 45-min egress) | ✅ done |
 | G | admin surface + frontend + compile | ✅ done |
-| H | migration (archive → delete → branch) + deploy | ◻ next |
+| H | migration (archive → delete → branch) + deploy | ◻ |
+| I | friend codes + polaris registry — [spec](docs/phase-two/FRIEND-CODES.md) | ✅ done |
+| J | IDS / security — admin-only mesh feed (polaris collector) | ✅ done |
 
-All built code lives in `island/`; **58 tests pass**, `tsc` clean. Nothing in git
-has been moved, deleted, or pushed yet.
+All built code lives in `island/`; **84 tests pass**, `tsc` clean. Nothing in git
+has been moved, deleted, or pushed yet. (Headless add-ons since G: op-token + friend
+CLI; user friend-remove + full-key view.) Friend codes: I-1 (compact codes), I-2 (ISL-… friend code), I-3 (registry), I-4 (friend-by-code), I-5 (deploy) done — Phase I complete.
 
 ## Sources of truth (in priority order)
 
@@ -74,8 +77,11 @@ The 12 questions in [`08-open-questions.md`](docs/phase-two/08-open-questions.md
 
 > 👉 **[`docs/phase-two/BUILD-PLAN.md`](docs/phase-two/BUILD-PLAN.md) — the build source of truth.**
 
-Deferred (not open, just later): Go `daemon/` reintegration (after it's finished);
-cross-node IDS aggregation. Build branch `feat/island-ts` not yet created.
+Cross-node IDS is DONE (Phase J), including the **wg-selfheal daemon**: it logs JSON to
+journald and islandd reads `journalctl -u wg-selfheal` → self-heal events in the feed.
+The daemon runs as its own per-node service (`daemon/RUNBOOK.md`); its interface-bounce
+remediation is still unwired (privilege gap, per the daemon). Build branch
+`feat/island-ts` not yet created.
 
 ## Conventions for working here
 

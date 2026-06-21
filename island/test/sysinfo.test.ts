@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { readFail2ban, readWg } from "../src/core/sysinfo.ts";
+import { readDaemon, readFail2ban, readWg } from "../src/core/sysinfo.ts";
+
+// daemon journal: each line is journalctl -o json whose MESSAGE is the daemon's JSON.
+const daemonJournal = (entries: Record<string, unknown>[]) => async () =>
+  entries.map((e) => JSON.stringify({ MESSAGE: JSON.stringify(e) })).join("\n");
 
 const journal = (msgs: string[]) => async () => msgs.map((m) => JSON.stringify({ MESSAGE: m })).join("\n");
 
@@ -48,4 +52,36 @@ test("readWg parses peers, derives handshake age + up flag", async () => {
 
 test("readWg degrades to no peers when wg is unavailable", async () => {
   expect(await readWg("wg0", async () => null)).toEqual({ iface: "wg0", peers: [] });
+});
+
+test("readDaemon replays state transitions → current non-healthy peers", async () => {
+  const peers = await readDaemon(
+    daemonJournal([
+      { msg: "starting" }, // ignored — not a state change
+      { msg: "state change", peer: "alice…", to: "stale", endpoint: "1.1.1.1:51820" },
+      { msg: "state change", peer: "alice…", to: "degraded", endpoint: "1.1.1.1:51820" }, // last wins
+      { msg: "state change", peer: "bob…", to: "degraded", endpoint: "2.2.2.2:51820" },
+      { msg: "state change", peer: "bob…", to: "ok", endpoint: "2.2.2.2:51820" }, // recovered → drop
+    ]),
+  );
+  expect(peers).toEqual([{ peer: "alice…", state: "degraded", endpoint: "1.1.1.1:51820" }]);
+});
+
+test("readDaemon queries the systemd TEMPLATE unit, not the bare name", async () => {
+  // Regression: `journalctl -u wg-selfheal` matches nothing because the unit is
+  // installed as wg-selfheal@spoke / wg-selfheal@relay, leaving the feed silently
+  // empty. Must target the instance glob so the daemon can be dropped in post-deploy.
+  let seen: string[] = [];
+  await readDaemon(async (argv) => {
+    seen = argv;
+    return null;
+  });
+  const i = seen.indexOf("-u");
+  expect(i).toBeGreaterThan(-1);
+  expect(seen[i + 1]).toBe("wg-selfheal@*");
+  expect(seen).not.toContain("wg-selfheal"); // the bare (non-matching) name is gone
+});
+
+test("readDaemon degrades to [] when the daemon isn't running", async () => {
+  expect(await readDaemon(async () => null)).toEqual([]);
 });
