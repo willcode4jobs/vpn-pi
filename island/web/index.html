@@ -163,8 +163,13 @@ async function Home(v){
       ${d.wg.peers.map(p=>`<div class="row"><div class="avatar">${initial(p.label||p.wg0)}</div><div class="grow"><div class="name">${esc(p.label||"unknown")}</div><div class="meta">${esc(p.wg0)}</div></div><span class="${p.up?"up":"down"}">${p.up?"online":"offline"}</span></div>`).join("")||`<div class="empty">No peers</div>`}
       <h3>Friend requests${d.requests.length?` (${d.requests.length})`:""}</h3>
       ${d.requests.map(r=>`<div class="row"><div class="avatar">${initial(r.from_label)}</div><div class="grow"><div class="name">${esc(r.from_label)}</div><div class="meta">wants to connect</div></div></div>`).join("")||`<div class="empty">None — accept invites under Friends</div>`}
-      <h3>Security (fail2ban)</h3>
-      ${d.fail2ban.map(j=>`<div class="kv"><span>${esc(j.jail)}</span><span>${j.currently_banned} blocked</span></div>`).join("")||`<div class="empty">Nothing blocked</div>`}
+      <h3>Security</h3>
+      ${(()=>{
+        const blocks=d.fail2ban.filter(j=>j.currently_banned>0).map(j=>`<div class="row"><div class="avatar">${ICONS.block}</div><div class="grow"><div class="name">${esc(j.jail)} <span class="meta">· blocked</span></div><div class="meta">${j.currently_banned} IP${j.currently_banned>1?"s":""} banned</div></div></div>`);
+        const heal=(d.selfheal||[]).map(s=>`<div class="row"><div class="avatar">${ICONS.alert}</div><div class="grow"><div class="name">${esc(s.peer)} <span class="meta">· self-heal</span></div><div class="meta">${esc(s.state)}${s.endpoint?` (${esc(s.endpoint)})`:""}</div></div></div>`);
+        const rows=[...blocks,...heal];
+        return rows.length?rows.join(""):`<div class="empty">All clear — no blocks or degraded links</div>`;
+      })()}
     </div>`;
   }catch(e){snack(e.message,true);}
 }
