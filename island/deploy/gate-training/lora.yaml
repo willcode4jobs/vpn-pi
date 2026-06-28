@@ -1,0 +1,31 @@
+# Stronger LoRA config for the gate fine-tune (mlx-lm).
+# v1 used defaults (rank 8, few iters) and stayed weak. This raises capacity + training so
+# the fine-tune can actually overwrite the 3B's refusal prior. Pass with:
+#   mlx_lm.lora --config lora.yaml --train --data ./gate-data --adapter-path ./adapters
+# (CLI flags override this file, so you can still tweak --iters on the fly.)
+
+model: "meta-llama/Llama-3.2-3B-Instruct"
+train: true
+data: "./gate-data"
+adapter_path: "./adapters"
+
+# NOTE on stability: lr 5e-5 was too hot — runs were high-variance (85% one run, 50%
+# collapse the next off a tiny data change). 1e-5 (mlx default) is stable/reproducible.
+# Watch "Val loss" in the report lines; if it bottoms early, lower iters or use an earlier
+# checkpoint (saved every `save_every`). If it bottoms then RISES, that's overfitting.
+iters: 2000
+batch_size: 8
+# LoRA on more layers (was 8) gives more room to shift behavior
+num_layers: 16
+learning_rate: 1.0e-5
+# keep an eye on val loss; report often
+steps_per_report: 50
+steps_per_eval: 200
+save_every: 300
+max_seq_length: 512
+
+# higher LoRA rank/scale than the rank-8 default — the real capacity lever
+lora_parameters:
+  rank: 16
+  scale: 20.0
+  dropout: 0.0

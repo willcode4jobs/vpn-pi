@@ -32,31 +32,39 @@ export class LlamaHttp implements LlamaClient {
   constructor(private readonly url: string) {}
 
   async decide(text: string): Promise<LlamaDecision> {
+    // CONTRACT: this prompt + the YES/NO labels MUST match the `SYSTEM` string the gate
+    // model was fine-tuned on (island/deploy/gate-training/make_dataset.py). Change one →
+    // change both, or the fine-tune won't transfer. See RUNBOOK-train-gate-model.md.
+    //
+    // NEUTRAL framing on purpose: the old "island internet gate / egress / authorized /
+    // APPROVE-DENY" wording pattern-matched the model's safety prior (security/exploit-
+    // adjacent) and made it refuse legit opens. Posing it as a plain YES/NO intent question
+    // sidesteps that reflex. The crypto is still the real authority — this only changes how
+    // the question is asked. YES → approve.
     const prompt =
-      "You are the island internet gate. Policy: APPROVE requests to open internet " +
-      "egress for the island; otherwise DENY. Reply with exactly APPROVE or DENY." +
-      `\nRequest: ${text}\nDecision:`;
+      "Decide whether the user wants to turn on internet access. " +
+      "Answer YES if the message asks to open, enable, allow, or turn on internet or network access. " +
+      "Answer NO if it asks to keep it off, is about something else, or is nonsense." +
+      `\nUser: ${text}\nAnswer:`;
     try {
       const r = await fetch(`${this.url}/completion`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        // A grammar pins the output to exactly APPROVE|DENY: removes the substring-parse
-        // ambiguity (a free-form "reason" can't accidentally contain the other verdict),
-        // and it's one token instead of ~32 — vega's 3B runs at ~6 tok/s, so this turns a
-        // ~6s decision into a sub-second one. The timeout makes a cold/wedged model a
-        // fail-safe DENY (the catch below) instead of hanging the operator's "open" click;
-        // 15s is generous headroom over the measured warm latency.
+        // Grammar pins output to exactly YES|NO: no substring ambiguity, one token instead
+        // of ~32 (vega's 3B runs ~6 tok/s, so this is sub-second), and the timeout turns a
+        // cold/wedged model into a fail-safe DENY (the catch below) instead of hanging the
+        // operator's "open" click. 15s is generous headroom over the measured warm latency.
         body: JSON.stringify({
           prompt,
           n_predict: 4,
           temperature: 0,
-          grammar: 'root ::= "APPROVE" | "DENY"',
+          grammar: 'root ::= "YES" | "NO"',
         }),
         signal: AbortSignal.timeout(15_000),
       });
       const j = (await r.json()) as { content?: string; completion?: string };
       const out = String(j.content ?? j.completion ?? "").toUpperCase();
-      const approve = out.includes("APPROVE") && !out.includes("DENY");
+      const approve = out.includes("YES") && !out.includes("NO"); // YES → open the gate
       return { approve, reason: out.trim() || "no reason" };
     } catch (e) {
       return { approve: false, reason: `llama unreachable: ${(e as Error).message}` };
