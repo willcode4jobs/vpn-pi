@@ -2,9 +2,18 @@
 node_modules/
 islandd
 *.tsbuildinfo
+# compiled release binaries (built on builder, scp'd to nodes — never tracked)
+dist/
 
-# runtime data — NEVER commit
-identity/        # private keypairs (William generates these on each host)
-*.db             # local node state + vega's island.db
+# runtime data + secrets — NEVER commit.
+# NOTE: git has NO inline comments — keep patterns on their own lines or they break.
+# private keypairs (William generates these on each host)
+identity/
+# local node state + vega's island.db
+*.db
+# admin.token / op tokens
+*.token
+# real env files (islandd.env); the committed template is islandd.env.example
+*.env
 *.log
 data/

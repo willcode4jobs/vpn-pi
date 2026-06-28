@@ -5,6 +5,13 @@
 !*_key.pub
 /prototype/configs/wireguard/*.conf
 !/prototype/configs/wireguard/*.example
+# WireGuard configs hold a [Interface] PrivateKey — never commit any of them anywhere
+# in the tree (templates live as *.md / *.example and are unaffected).
+*.conf
+!*.conf.example
+# Node secrets / tokens / real env files (backstop; runtime dirs live off-repo too)
+*.token
+admin.token
 
 # Live-system "evidence" — kept on disk for reference, never committed
 prototype/configs/**/*.current

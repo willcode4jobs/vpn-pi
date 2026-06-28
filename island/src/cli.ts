@@ -4,6 +4,8 @@
 // op-token (ISLAND_OP_TOKEN, sent as x-op-token) for a daemon bound to wg0.
 //
 //   islandd keygen [dir]                 (generate this node's identity keys)
+//   islandd canary --admin-dir <dir> --to-x25519 <vega-x25519> [--send <url> --admin-token <tok>]
+//                                        (mint a signed+sealed canary to open vega's gate)
 //   islandd friend invite [--ttl <seconds>]
 //   islandd friend accept  '<token>'
 //   islandd friend confirm '<reply>'
@@ -33,6 +35,13 @@ async function req(path: string, json?: unknown): Promise<any> {
 function usage(): never {
   console.log(
     `islandd keygen [dir]         generate this node's identity keypairs (does not overwrite)
+islandd canary               mint a signed+sealed canary to open vega's gate
+  --admin-dir <dir>          the admin keypair dir (from \`islandd keygen\`; holds the private key)
+  --to-x25519 <b64>          vega's X25519 public key (read it from vega's /api/identity)
+  [--text '<keyword …>']     the request (default "<keyword> open the gate")
+  [--keyword GREEN18]        the canary keyword (default GREEN18 / ISLAND_CANARY_KEYWORD)
+  [--send <url>]             POST the canary to vega; omit to just print the blob
+  [--admin-token <tok>]      vega's admin token (/admin/canary is admin-gated; or ISLAND_ADMIN_TOKEN)
 islandd friend <command>
   invite [--ttl <seconds>]   issue an invite to hand to a friend (default 24h)
   accept  '<token>'          accept an invite -> prints a reply to send back
@@ -61,10 +70,69 @@ async function keygen(dir: string): Promise<void> {
   console.log(`this node's public key: ${await toB64(id.ed25519.publicKey)}`);
 }
 
+/** Parse `--key value` / bare `--flag` pairs into a map (values with spaces come pre-split
+ *  by the shell into a single argv element, so `--text 'a b c'` arrives intact). */
+function parseFlags(argv: string[]): Record<string, string> {
+  const f: Record<string, string> = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (!a || !a.startsWith("--")) continue;
+    const next = argv[i + 1];
+    f[a.slice(2)] = next && !next.startsWith("--") ? argv[++i]! : "true";
+  }
+  return f;
+}
+
+/**
+ * Mint a canary — sign it with the ADMIN private key and seal it to vega's X25519 — then
+ * (optionally) POST it to vega's /admin/canary. This is the production "admin app" for the
+ * gate: the admin private key lives ONLY here, never in a browser and never on vega.
+ * Without --send it prints the sealed blob so it can be delivered by hand.
+ */
+async function mintCanary(argv: string[]): Promise<void> {
+  const { loadIdentity } = await import("./core/identity.ts");
+  const { makeCanary } = await import("./core/canary.ts");
+  const f = parseFlags(argv);
+  const adminDir = f["admin-dir"];
+  const toX = f["to-x25519"];
+  const keyword = f["keyword"] ?? process.env.ISLAND_CANARY_KEYWORD ?? "GREEN18";
+  const text = f["text"] ?? `${keyword} open the gate`;
+  const send = f["send"];
+  const adminToken = f["admin-token"] ?? ADMIN;
+  if (!adminDir || !toX) {
+    console.error(
+      "usage: islandd canary --admin-dir <dir> --to-x25519 <vega x25519 b64>\n" +
+        "       [--text '<keyword …>'] [--keyword GREEN18] [--send <vega url> --admin-token <tok>]\n" +
+        "  --to-x25519 is vega's encryption key — read it from vega's /api/identity.",
+    );
+    process.exit(2);
+  }
+  const admin = await loadIdentity(adminDir); // throws clearly if the keypair dir is wrong
+  const blob = await makeCanary(admin, keyword, text, toX);
+  if (!send) {
+    console.log(blob); // print the sealed canary for manual delivery / paste into /admin
+    return;
+  }
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (adminToken) headers["x-admin-token"] = adminToken;
+  const r = await fetch(`${send}/admin/canary`, { method: "POST", headers, body: JSON.stringify({ blob }) });
+  const j = (await r.json().catch(() => null)) as { error?: string; opened?: boolean; reason?: string; gate?: { state: string; closes_at: string | null } } | null;
+  if (!r.ok) {
+    console.error("error:", (j && j.error) || `HTTP ${r.status}`);
+    process.exit(1);
+  }
+  console.log(j?.opened ? `Gate opened — ${j.reason}` : `Denied — ${j?.reason ?? "no reason"}`);
+  if (j?.gate) console.log(`gate: ${j.gate.state}${j.gate.closes_at ? ` (recloses ${j.gate.closes_at})` : ""}`);
+}
+
 export async function runCli(argv: string[]): Promise<void> {
   const [group, cmd, ...rest] = argv;
   if (group === "keygen") {
     await keygen(cmd ?? join(process.env.ISLAND_DATA_DIR ?? "/var/lib/islandd", "identity"));
+    return;
+  }
+  if (group === "canary") {
+    await mintCanary(argv.slice(1));
     return;
   }
   if (group !== "friend") usage();

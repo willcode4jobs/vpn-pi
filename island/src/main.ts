@@ -374,9 +374,12 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
   // The node's own dashboard: gate state, wg connectivity, local fail2ban, requests.
   if (method === "GET" && path === "/api/home") {
     requireOperator(req, server, ctx);
-    const [wg, fail2ban] = ctx.args.mock
-      ? [mockWg(ctx.wgIface), mockFail2ban()]
-      : await Promise.all([readWg(ctx.wgIface), readFail2ban()]);
+    // selfheal = the wg-selfheal daemon's current per-peer classifications (stale/
+    // degraded). Read alongside fail2ban so Home's Security panel shows link health,
+    // not just IP blocks; degrades to [] if the daemon isn't installed.
+    const [wg, fail2ban, selfheal] = ctx.args.mock
+      ? [mockWg(ctx.wgIface), mockFail2ban(), mockDaemon()]
+      : await Promise.all([readWg(ctx.wgIface), readFail2ban(), readDaemon()]);
     const gs = ctx.gate.state();
     return Response.json({
       gate: { state: gs.state, closes_at: gs.closesAt },
@@ -390,6 +393,7 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
         })),
       },
       fail2ban,
+      selfheal, // [{ peer, state, endpoint }] from the wg-selfheal daemon
       requests: ctx.book.listPending().map((r) => ({
         from_label: r.peer.label,
         from_pubkey: r.peer.ed25519,
