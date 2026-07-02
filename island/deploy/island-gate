@@ -21,6 +21,7 @@ gate_open() {
   nft delete table inet "$TABLE" 2>/dev/null || true
   nft add table inet "$TABLE"
   nft add chain inet "$TABLE" forward '{ type filter hook forward priority 0; policy drop; }'
+  nft add rule  inet "$TABLE" forward iifname "$MESH_IFACE"   oifname "$MESH_IFACE"   accept
   nft add rule  inet "$TABLE" forward iifname "$MESH_IFACE"   oifname "$UPLINK_IFACE" accept
   nft add rule  inet "$TABLE" forward iifname "$UPLINK_IFACE" oifname "$MESH_IFACE"   ct state established,related accept
   nft add chain inet "$TABLE" postrouting '{ type nat hook postrouting priority 100; }'

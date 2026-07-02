@@ -99,6 +99,20 @@ function parseArgs(argv: string[]): Args {
   return args;
 }
 
+/**
+ * "Admin app" config (Option C): when this node holds the admin signing keypair
+ * (ISLAND_ADMIN_KEY_DIR), it can MINT canaries locally and open the gate node one-click.
+ * The private key lives ONLY here (the operator's trusted machine), never on the mesh —
+ * POST /api/gate/open is operator-only. See deploy/RUNBOOK-gate-open-from-app.md.
+ */
+interface AdminApp {
+  identity: Identity; // the admin signing keypair (loaded from ISLAND_ADMIN_KEY_DIR)
+  target: string; // the gate node's base URL (ISLAND_GATE_TARGET), e.g. http://10.42.0.2:8787
+  targetX25519: string; // the gate node's X25519 pubkey — we seal the canary to it
+  targetToken: string; // the gate node's admin token (to call its /admin/canary)
+  targetLabel: string; // display name for the gate node (the UI shows the gate as "· <label>")
+}
+
 interface Ctx {
   args: Args;
   identity: Identity;
@@ -111,6 +125,7 @@ interface Ctx {
   share: FileShare;
   msgs: MessageBook;
   gate: Gate; // the canary-driven internet gate (default island)
+  adminApp: AdminApp | null; // Option C: this node holds the admin key → can mint + open
   registry: RegistryStore | null; // friend-code directory (polaris; ISLAND_REGISTRY=1)
   registryUrl: string; // where this node announces/resolves codes (ISLAND_REGISTRY_URL)
   eventStore: EventStore | null; // IDS collector (polaris; ISLAND_EVENTS=1)
@@ -195,6 +210,31 @@ async function boot(args: Args): Promise<Ctx> {
     : new ShellGateExec(process.env.ISLAND_GATE_CMD ?? "sudo /usr/local/sbin/island-gate");
   const gate = new Gate(llama, gateExec, gateTtlS);
 
+  // ---- admin app (Option C): if this node holds the admin signing key, it can mint
+  // canaries and open the gate node one-click. Set only on the operator's trusted machine;
+  // the key is never read by any mesh-facing path (the open route is operator-only). ----
+  const adminKeyDir = process.env.ISLAND_ADMIN_KEY_DIR ?? "";
+  const gateTarget = process.env.ISLAND_GATE_TARGET ?? "";
+  // The gate node's display name: explicit override, else the host from its URL
+  // (e.g. http://10.42.0.2:8787 → "10.42.0.2"), so the UI can label the gate it controls.
+  let gateTargetLabel = process.env.ISLAND_GATE_TARGET_LABEL ?? "";
+  if (!gateTargetLabel && gateTarget) {
+    try {
+      gateTargetLabel = new URL(gateTarget).hostname;
+    } catch {
+      gateTargetLabel = gateTarget;
+    }
+  }
+  const adminApp: AdminApp | null = adminKeyDir
+    ? {
+        identity: await loadIdentity(adminKeyDir),
+        target: gateTarget,
+        targetX25519: process.env.ISLAND_GATE_TARGET_X25519 ?? "",
+        targetToken: process.env.ISLAND_GATE_TARGET_TOKEN ?? "",
+        targetLabel: gateTargetLabel,
+      }
+    : null;
+
   // ---- friend-code registry (Phase I — polaris). Enabled on the registry node, and
   // always in --mock so the demo can announce+resolve against itself. ----
   const registryEnabled = args.mock || /^(1|true|yes)$/i.test(process.env.ISLAND_REGISTRY ?? "");
@@ -255,6 +295,7 @@ async function boot(args: Args): Promise<Ctx> {
     share,
     msgs,
     gate,
+    adminApp,
     registry,
     registryUrl: process.env.ISLAND_REGISTRY_URL ?? "",
     eventStore,
@@ -347,6 +388,37 @@ async function deliver(wg0: string, port: number, path: string, body: unknown): 
   }
 }
 
+/**
+ * The gate view this node should present. On an **admin app** (it holds the admin key and
+ * points at a gate node via ISLAND_GATE_TARGET), the operator cares about the TARGET's gate,
+ * not this laptop's empty local one — so the status read proxies to the target. On the gate
+ * node itself (no adminApp/target) it returns the real local gate. `target`/`targetLabel`
+ * let the UI label the gate (e.g. "· vega"); `reachable=false` means the target didn't answer.
+ */
+async function gateView(
+  ctx: Ctx,
+): Promise<{ state: string; closesAt: string | null; target: string | null; targetLabel: string | null; reachable: boolean }> {
+  const aa = ctx.adminApp;
+  if (!aa?.target) {
+    const gs = ctx.gate.state();
+    return { state: gs.state, closesAt: gs.closesAt, target: null, targetLabel: null, reachable: true };
+  }
+  try {
+    const r = await fetch(`${aa.target}/api/gate`, { signal: AbortSignal.timeout(5_000) });
+    const j = (await r.json()) as { state?: string; closes_at?: string | null };
+    return {
+      state: j.state ?? "unknown",
+      closesAt: j.closes_at ?? null,
+      target: aa.target,
+      targetLabel: aa.targetLabel,
+      reachable: true,
+    };
+  } catch {
+    // Target unreachable: report island (fail-safe — never claim the gate is open) + reachable:false.
+    return { state: "island", closesAt: null, target: aa.target, targetLabel: aa.targetLabel, reachable: false };
+  }
+}
+
 async function readJson(req: Request): Promise<Record<string, unknown>> {
   try {
     return (await req.json()) as Record<string, unknown>;
@@ -380,9 +452,10 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
     const [wg, fail2ban, selfheal] = ctx.args.mock
       ? [mockWg(ctx.wgIface), mockFail2ban(), mockDaemon()]
       : await Promise.all([readWg(ctx.wgIface), readFail2ban(), readDaemon()]);
-    const gs = ctx.gate.state();
+    // On an admin app this reflects the TARGET gate node (vega), not this machine's local gate.
+    const gv = await gateView(ctx);
     return Response.json({
-      gate: { state: gs.state, closes_at: gs.closesAt },
+      gate: { state: gv.state, closes_at: gv.closesAt, target: gv.target, target_label: gv.targetLabel, reachable: gv.reachable },
       wg: {
         iface: wg.iface,
         peers: wg.peers.map((p) => ({
@@ -401,10 +474,17 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
       })),
     });
   }
-  // Island-mode indicator — readable by anyone on the node (informational).
+  // Island-mode indicator — readable by anyone on the node (informational). On an admin app
+  // this proxies to the gate node (vega) so the chip reflects the gate it actually controls.
   if (method === "GET" && path === "/api/gate") {
-    const gs = ctx.gate.state();
-    return Response.json({ state: gs.state, closes_at: gs.closesAt });
+    const gv = await gateView(ctx);
+    return Response.json({
+      state: gv.state,
+      closes_at: gv.closesAt,
+      target: gv.target,
+      target_label: gv.targetLabel,
+      reachable: gv.reachable,
+    });
   }
 
   // ---- friend-code registry (Phase I — polaris only). Public directory: any node
@@ -491,16 +571,65 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
       gate: { state: result.state.state, closes_at: result.state.closesAt },
     });
   }
-  // Gate audit log.
+  // Gate audit log. On an admin app, proxy to the gate node so the operator reads vega's
+  // real log (this laptop's local gate has none).
   if (method === "GET" && path === "/admin/gate/log") {
     requireAdmin(req, server, ctx);
+    const aa = ctx.adminApp;
+    if (aa?.target) {
+      try {
+        const r = await fetch(`${aa.target}/admin/gate/log`, {
+          headers: { "x-admin-token": aa.targetToken },
+          signal: AbortSignal.timeout(5_000),
+        });
+        const j = (await r.json().catch(() => ({ log: [] }))) as Record<string, unknown>;
+        return Response.json(j, { status: r.ok ? 200 : r.status });
+      } catch {
+        return Response.json({ log: [] }); // target unreachable — empty, not an error
+      }
+    }
     return Response.json({ log: ctx.gate.log() });
   }
-  // Manual early close (least privilege — closing is always safe).
+  // Manual early close (least privilege — closing is always safe). On an admin app, forward
+  // the close to the gate node (closing the laptop's local gate would do nothing useful).
   if (method === "POST" && path === "/admin/gate/close") {
     requireAdmin(req, server, ctx);
+    const aa = ctx.adminApp;
+    if (aa?.target) {
+      const r = await fetch(`${aa.target}/admin/gate/close`, {
+        method: "POST",
+        headers: { "x-admin-token": aa.targetToken },
+        signal: AbortSignal.timeout(5_000),
+      });
+      const j = (await r.json().catch(() => null)) as Record<string, unknown> | null;
+      return Response.json(j ?? { error: `gate node returned ${r.status}` }, { status: r.ok ? 200 : r.status });
+    }
     const gs = await ctx.gate.close("manual (admin)");
     return Response.json({ gate: { state: gs.state, closes_at: gs.closesAt } });
+  }
+  // One-click open from the admin app (Option C). Operator-only — this node must hold the
+  // admin key (ISLAND_ADMIN_KEY_DIR). It mints the canary HERE (the private key never leaves
+  // this machine, never crosses the mesh) and forwards the sealed blob to the gate node's
+  // /admin/canary. A node without the key returns 404 (it simply can't open the gate).
+  if (method === "POST" && path === "/api/gate/open") {
+    requireOperator(req, server, ctx);
+    const aa = ctx.adminApp;
+    if (!aa) return new Response("not an admin app (set ISLAND_ADMIN_KEY_DIR + ISLAND_GATE_TARGET*)", { status: 404 });
+    if (!aa.target || !aa.targetX25519) {
+      throw new FriendError("admin app misconfigured: set ISLAND_GATE_TARGET and ISLAND_GATE_TARGET_X25519");
+    }
+    const body = await readJson(req);
+    // The admin never types the keyword; we prefix it (it must be the canary's first token).
+    const reason = String(body.text ?? "").trim() || "open the internet";
+    const text = `${ctx.canaryKeyword} ${reason}`;
+    const blob = await makeCanary(aa.identity, ctx.canaryKeyword, text, aa.targetX25519);
+    const r = await fetch(`${aa.target}/admin/canary`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-admin-token": aa.targetToken },
+      body: JSON.stringify({ blob }),
+    });
+    const j = (await r.json().catch(() => null)) as Record<string, unknown> | null;
+    return Response.json(j ?? { error: `gate node returned ${r.status}` }, { status: r.ok ? 200 : r.status });
   }
   // --mock only: mint a canary (the admin app's job in prod) so the laptop demo can
   // drive the full open flow without a separate admin keypair.
