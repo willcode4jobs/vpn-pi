@@ -276,7 +276,7 @@ async function Files(v){
   const c=el(`<div class="card"><h2>Shared files</h2>
     <div class="row" style="border:0;padding-bottom:.5rem"><input type="file" id="f" style="border:0;padding:.4rem 0"><button class="btn filled" id="up">Upload</button></div>
     <div id="l" class="empty">Loading…</div></div>`);v.append(c);
-  c.querySelector("#up").onclick=async()=>{const f=c.querySelector("#f").files[0];if(!f){snack("Pick a file first");return;}const fd=new FormData();fd.append("file",f);try{await fetch("/api/files",{method:"POST",body:fd});snack("Uploaded");render();}catch(e){snack(e.message,true);}};
+  c.querySelector("#up").onclick=async()=>{const f=c.querySelector("#f").files[0];if(!f){snack("Pick a file first");return;}const fd=new FormData();fd.append("file",f);try{await api("/api/files",{method:"POST",body:fd});snack("Uploaded");render();}catch(e){snack(e.message,true);}};
   try{const d=await api("/api/files");
     c.querySelector("#l").outerHTML=`<div id="l">${d.files.map(f=>`<div class="row"><div class="avatar">${ICONS.download}</div><div class="grow"><div class="name"><a href="/api/files/${f.id}/download">${esc(f.name)}</a></div><div class="meta">${(f.size/1024).toFixed(1)} KB</div></div><button class="btn danger sm" data-del="${f.id}">Delete</button></div>`).join("")||`<div class="empty">No files shared yet</div>`}</div>`;
     c.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{try{await api("/api/files/"+b.dataset.del,{method:"DELETE"});render();}catch(e){snack(e.message,true);}});
