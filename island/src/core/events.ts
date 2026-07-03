@@ -35,27 +35,41 @@ function signable(r: Omit<EventReport, "sig">): { [k: string]: Json } {
 }
 
 /** Turn local host readouts into normalized security events. */
-export function collectLocal(jails: JailStatus[], wg: WgStatus, daemon: DaemonPeer[] = []): SecurityEvent[] {
+export function collectLocal(
+  jails: JailStatus[],
+  wg: WgStatus,
+  daemon: DaemonPeer[] = [],
+  // Resolve a wg0 IP to a friend's label so the feed reads "sirius" not "10.42.0.5".
+  // Runs on the REPORTING node (which owns the friendbook); defaults to no-op, so
+  // an IP falls through unchanged. The daemon now emits wg0 IPs, so its self-heal
+  // events resolve too; an older daemon emitting a pubkey simply won't match.
+  nameFor: (wg0: string) => string | undefined = () => undefined,
+): SecurityEvent[] {
   const out: SecurityEvent[] = [];
   for (const j of jails) {
     for (const ip of j.banned_ips) out.push({ kind: "fail2ban", subject: ip, detail: `blocked by ${j.jail}` });
   }
   for (const p of wg.peers) {
     if (!p.up) {
+      const ip = p.wg0 || p.publicKey.slice(0, 12);
+      const name = nameFor(p.wg0);
+      const stale = p.handshakeAgeS == null ? "no handshake yet" : `stale handshake (${p.handshakeAgeS}s)`;
       out.push({
         kind: "degraded-link",
-        subject: p.wg0 || p.publicKey.slice(0, 12),
-        detail: p.handshakeAgeS == null ? "no handshake yet" : `stale handshake (${p.handshakeAgeS}s)`,
+        subject: name ?? ip, // prefer the human name; keep the IP in detail when we have one
+        detail: name ? `${stale} — ${ip}` : stale,
       });
     }
   }
   // wg-selfheal daemon classifications (richer than raw link state: "degraded" means
   // the self-heal circuit breaker latched — remediation exhausted).
   for (const d of daemon) {
+    const name = nameFor(d.peer); // d.peer is the wg0 IP from the daemon's event
+    const state = `${d.state}${d.endpoint ? ` (${d.endpoint})` : ""}`;
     out.push({
       kind: "self-heal",
-      subject: d.peer,
-      detail: `${d.state}${d.endpoint ? ` (${d.endpoint})` : ""}`,
+      subject: name ?? d.peer,
+      detail: name ? `${state} — ${d.peer}` : state,
     });
   }
   return out;

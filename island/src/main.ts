@@ -873,7 +873,9 @@ async function main(): Promise<void> {
       const [jails, wg, daemon] = ctx.args.mock
         ? [mockFail2ban(), mockWg(ctx.wgIface), mockDaemon()]
         : await Promise.all([readFail2ban(), readWg(ctx.wgIface), readDaemon()]);
-      await report(ctx.eventsUrl, ctx.identity, ctx.label, collectLocal(jails, wg, daemon));
+      // Resolve peer wg0 IPs to friend labels so the mesh feed reads by node name.
+      const nameFor = (wg0: string) => ctx.book.friendByWg0(wg0)?.peer.label;
+      await report(ctx.eventsUrl, ctx.identity, ctx.label, collectLocal(jails, wg, daemon, nameFor));
     };
     push().catch(() => {});
     setInterval(() => push().catch(() => {}), 60_000);

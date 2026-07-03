@@ -30,6 +30,22 @@ test("collectLocal includes wg-selfheal daemon events", () => {
   expect(ev).toContainEqual({ kind: "self-heal", subject: "sirius…", detail: "degraded (203.0.113.9:51820)" });
 });
 
+test("collectLocal resolves wg0 IPs to friend names (self-heal + degraded-link)", () => {
+  const nameFor = (wg0: string) => (wg0 === "10.42.0.5" ? "sirius" : undefined);
+  const ev = collectLocal(
+    [],
+    { iface: "wg0", peers: [{ wg0: "10.42.0.5", publicKey: "K", handshakeAgeS: 600, up: false }] },
+    [{ peer: "10.42.0.5", state: "degraded", endpoint: "203.0.113.9:51820" }],
+    nameFor,
+  );
+  // named: subject is the label, IP retained in detail
+  expect(ev).toContainEqual({ kind: "self-heal", subject: "sirius", detail: "degraded (203.0.113.9:51820) — 10.42.0.5" });
+  expect(ev.find((e) => e.kind === "degraded-link")!).toMatchObject({ subject: "sirius" });
+  // unknown IP falls through to the IP unchanged
+  const ev2 = collectLocal([], { iface: "wg0", peers: [] }, [{ peer: "10.42.0.9", state: "stale", endpoint: "" }], nameFor);
+  expect(ev2).toContainEqual({ kind: "self-heal", subject: "10.42.0.9", detail: "stale" });
+});
+
 test("a report verifies; tampering or a foreign signer does not", async () => {
   const id = await generateIdentity();
   const r = await signReport(id, "sirius", [{ kind: "fail2ban", subject: "1.2.3.4", detail: "blocked by sshd" }]);
