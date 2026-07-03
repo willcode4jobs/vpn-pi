@@ -119,11 +119,32 @@ type ActionRecord struct {
 	At   time.Time
 }
 
-// Config holds the decision core's tunables.
+// Config holds the decision core's tunables. Two threshold groups live here and
+// are deliberately independent:
+//   - the time-tiered HEALTH classification (StaleAfter/DegradedAfter/RestoredHold),
+//     which drives the IDS feed and is intentionally aggressive; and
+//   - the REMEDIATION trigger (Staleness) + circuit breaker (Window/MaxReResolve/
+//     MaxBounce), kept conservative so idle-but-healthy peers aren't re-resolved on
+//     every handshake gap. A peer can read "degraded" in the feed while remediation
+//     still holds off until Staleness — that decoupling is by design.
 type Config struct {
-	// Staleness is how long a peer may go without a handshake before it is
-	// considered dead. Keep it comfortably above the ~2 min keepalive renewal
-	// (150–180s) or healthy peers will flap.
+	// StaleAfter: handshake age ≥ this classifies a peer as stale. NB: WireGuard
+	// re-handshakes only ~every 120s even on healthy links, so a low value (30s)
+	// makes healthy peers cycle through stale/degraded between handshakes — an
+	// accepted, intentional trade for fast visibility, not remediation.
+	StaleAfter time.Duration
+	// DegradedAfter: handshake age ≥ this classifies a peer as degraded. A
+	// never-handshaked peer is infinitely stale, so it reads degraded.
+	DegradedAfter time.Duration
+	// RestoredHold: after a stale/degraded peer returns to healthy it is marked
+	// "restored"; it only reaches ok after staying healthy this long (a recovery
+	// debounce). Slipping back past StaleAfter during the hold drops it back.
+	RestoredHold time.Duration
+
+	// Staleness is how long a peer may go without a handshake before REMEDIATION
+	// kicks in. Keep it comfortably above the ~2 min keepalive renewal (150–180s)
+	// or healthy peers get needlessly re-resolved. This does NOT gate the health
+	// classification above — only the act path.
 	Staleness time.Duration
 	// Window is the circuit-breaker lookback: how far back recent actions are
 	// counted when deciding whether to keep trying.
@@ -136,12 +157,16 @@ type Config struct {
 	MaxBounce int
 }
 
-// DefaultConfig returns conservative, flap-resistant defaults.
+// DefaultConfig returns the classification ladder (30s stale / 60s degraded /
+// 30s restored-hold) plus conservative, flap-resistant remediation defaults.
 func DefaultConfig() Config {
 	return Config{
-		Staleness:    180 * time.Second,
-		Window:       10 * time.Minute,
-		MaxReResolve: 3,
-		MaxBounce:    1,
+		StaleAfter:    30 * time.Second,
+		DegradedAfter: 60 * time.Second,
+		RestoredHold:  30 * time.Second,
+		Staleness:     180 * time.Second,
+		Window:        10 * time.Minute,
+		MaxReResolve:  3,
+		MaxBounce:     1,
 	}
 }

@@ -37,6 +37,12 @@ func TestDiff(t *testing.T) {
 			[]heal.PeerStatus{status("a", heal.StateDegraded)}, map[string]string{"a": "degraded"}},
 		{"degraded→ok → recovered", map[string]heal.State{"a": heal.StateDegraded},
 			[]heal.PeerStatus{status("a", heal.StateOK)}, map[string]string{"a": "recovered"}},
+		{"degraded→restored → restored", map[string]heal.State{"a": heal.StateDegraded},
+			[]heal.PeerStatus{status("a", heal.StateRestored)}, map[string]string{"a": "restored"}},
+		{"restored→ok → recovered", map[string]heal.State{"a": heal.StateRestored},
+			[]heal.PeerStatus{status("a", heal.StateOK)}, map[string]string{"a": "recovered"}},
+		{"restored→stale → stale", map[string]heal.State{"a": heal.StateRestored},
+			[]heal.PeerStatus{status("a", heal.StateStale)}, map[string]string{"a": "stale"}},
 		{"multi: only the changed peer emits", map[string]heal.State{"a": heal.StateOK, "b": heal.StateOK},
 			[]heal.PeerStatus{status("a", heal.StateOK), status("b", heal.StateStale)}, map[string]string{"b": "stale"}},
 	}

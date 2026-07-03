@@ -71,7 +71,7 @@ func run() error {
 		"staleness", cfg.Staleness.String(), "dry_run", *dryRun, "snapshot", *snapshot)
 
 	st := &loopState{
-		lastState:     map[string]heal.State{},
+		memo:          map[string]heal.PeerMemo{},
 		endpointCache: map[string]string{},
 	}
 
@@ -92,9 +92,9 @@ func run() error {
 
 // loopState is the daemon's memory across ticks.
 type loopState struct {
-	lastState     map[string]heal.State // per-peer state, for transition detection
-	endpointCache map[string]string     // last endpoint seen while a peer was healthy
-	history       []heal.ActionRecord   // executed remediations, for the circuit breaker
+	memo          map[string]heal.PeerMemo // per-peer state + restored-hold clock
+	endpointCache map[string]string        // last endpoint seen while a peer was healthy
+	history       []heal.ActionRecord      // executed remediations, for the circuit breaker
 }
 
 // tick runs one full cycle: read -> classify -> emit transitions -> remediate.
@@ -115,11 +115,13 @@ func tick(log *slog.Logger, reader *wg.Reader, role heal.Role, cfg heal.Config, 
 		observe(log, now, peers, cfg)
 	}
 
-	statuses := heal.Classify(now, role, peers, st.history, cfg)
+	// Health classification is time-tiered and stateful (the restored hold needs
+	// the prior state); remediation below is separate and stays on cfg.Staleness.
+	statuses, nextMemo := heal.Step(now, peers, st.memo, cfg)
 	cacheHealthy(st.endpointCache, statuses)
 
-	events, next := alert.Diff(st.lastState, statuses, now)
-	st.lastState = next
+	events, _ := alert.Diff(heal.StatesOf(st.memo), statuses, now)
+	st.memo = nextMemo
 	for _, e := range events {
 		log.Info("state change",
 			"event", e.Kind(),
@@ -171,7 +173,10 @@ func remediate(log *slog.Logger, reader *wg.Reader, st *loopState, a heal.Action
 // endpoints are static.
 func cacheHealthy(cache map[string]string, statuses []heal.PeerStatus) {
 	for _, s := range statuses {
-		if s.State == heal.StateOK && s.Endpoint != "" {
+		// ok and restored both mean a fresh handshake, so the endpoint is live.
+		// Caching on restored too matters under the aggressive 30s threshold,
+		// where a healthy peer may sit in restored more than in strict ok.
+		if (s.State == heal.StateOK || s.State == heal.StateRestored) && s.Endpoint != "" {
 			cache[s.Peer] = s.Endpoint
 		}
 	}
@@ -193,9 +198,14 @@ func pruneHistory(history []heal.ActionRecord, cutoff time.Time) []heal.ActionRe
 // operation emits transitions only (see tick).
 func observe(log *slog.Logger, now time.Time, peers []heal.PeerState, cfg heal.Config) {
 	for _, p := range peers {
-		status := "stale"
-		if !p.LastHandshake.IsZero() && now.Sub(p.LastHandshake) < cfg.Staleness {
-			status = "healthy"
+		// Snapshot label uses the classification thresholds (stateless — no
+		// restored, which needs cross-tick memory). Mirrors ok/stale/degraded.
+		status := "ok"
+		switch {
+		case p.LastHandshake.IsZero() || now.Sub(p.LastHandshake) >= cfg.DegradedAfter:
+			status = "degraded"
+		case now.Sub(p.LastHandshake) >= cfg.StaleAfter:
+			status = "stale"
 		}
 		log.Info("peer",
 			"key", shortKey(p.PublicKey),
