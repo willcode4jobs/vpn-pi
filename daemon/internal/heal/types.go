@@ -39,10 +39,15 @@ func (r Role) String() string {
 // PeerState is a read-only snapshot of one WireGuard peer, as produced by the
 // netlink read path. The decision core consumes these; it never produces them.
 type PeerState struct {
-	// PublicKey is the peer's WireGuard public key — its stable identity.
+	// PublicKey is the peer's WireGuard public key — its stable identity, and
+	// the key used internally for remediation history and the endpoint cache.
 	PublicKey string
 	// Name is an optional human label (e.g. "sirius"), for logging only.
 	Name string
+	// TunnelIP is the peer's mesh/wg0 address (its host AllowedIP, e.g.
+	// "10.42.0.5"), used as a readable identifier in logs and the IDS feed in
+	// preference to the opaque public key. Empty if the peer has no AllowedIPs.
+	TunnelIP string
 	// LastHandshake is the time of the most recent successful handshake. The
 	// zero value means the peer has never handshaked.
 	LastHandshake time.Time
@@ -106,8 +111,9 @@ func (k ActionKind) String() string {
 // Action is a single remediation decision targeting a single peer.
 type Action struct {
 	Kind   ActionKind
-	Peer   string // public key of the peer the action targets
+	Peer   string // public key of the peer the action targets (the internal key)
 	Name   string // optional human label, copied from PeerState
+	IP     string // peer's tunnel address, copied from PeerState — for logging
 	Reason string // human-readable justification, for logging
 }
 

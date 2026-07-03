@@ -125,7 +125,8 @@ func tick(log *slog.Logger, reader *wg.Reader, role heal.Role, cfg heal.Config, 
 	for _, e := range events {
 		log.Info("state change",
 			"event", e.Kind(),
-			"peer", shortKey(e.Peer),
+			"peer", peerLabel(e.Name, e.TunnelIP, e.Peer), // readable id for the IDS feed
+			"pubkey", shortKey(e.Peer),                    // keep the key for correlation
 			"from", e.From.String(), "to", e.To.String(),
 			"handshake_age", ageLabel(now, e.LastHandshake),
 			"endpoint", e.Endpoint)
@@ -141,22 +142,23 @@ func tick(log *slog.Logger, reader *wg.Reader, role heal.Role, cfg heal.Config, 
 // (e.g. a passive, inbound-only peer) is un-actionable and skipped quietly — the
 // stale transition already surfaced it once.
 func remediate(log *slog.Logger, reader *wg.Reader, st *loopState, a heal.Action, now time.Time, dryRun bool) {
+	who := peerLabel(a.Name, a.IP, a.Peer)
 	switch a.Kind {
 	case heal.ActionReResolve:
 		ep, ok := st.endpointCache[a.Peer]
 		if !ok {
-			log.Debug("no endpoint to re-assert (passive peer?)", "peer", shortKey(a.Peer))
+			log.Debug("no endpoint to re-assert (passive peer?)", "peer", who)
 			return
 		}
 		if dryRun {
-			log.Info("would re-assert endpoint", "peer", shortKey(a.Peer), "endpoint", ep)
+			log.Info("would re-assert endpoint", "peer", who, "endpoint", ep)
 			return
 		}
 		if err := reader.ReassertEndpoint(a.Peer, ep); err != nil {
-			log.Error("re-assert failed", "peer", shortKey(a.Peer), "endpoint", ep, "err", err)
+			log.Error("re-assert failed", "peer", who, "endpoint", ep, "err", err)
 			return
 		}
-		log.Info("re-asserted endpoint", "peer", shortKey(a.Peer), "endpoint", ep, "reason", a.Reason)
+		log.Info("re-asserted endpoint", "peer", who, "endpoint", ep, "reason", a.Reason)
 		st.history = append(st.history, heal.ActionRecord{Peer: a.Peer, Kind: heal.ActionReResolve, At: now})
 
 	case heal.ActionAlert:
@@ -164,7 +166,7 @@ func remediate(log *slog.Logger, reader *wg.Reader, st *loopState, a heal.Action
 
 	case heal.ActionBounceInterface:
 		// Unreachable while MaxBounce=0; guarded for when bounce gets wired.
-		log.Warn("interface bounce requested but not wired (privilege gap)", "peer", shortKey(a.Peer))
+		log.Warn("interface bounce requested but not wired (privilege gap)", "peer", who)
 	}
 }
 
@@ -208,7 +210,8 @@ func observe(log *slog.Logger, now time.Time, peers []heal.PeerState, cfg heal.C
 			status = "stale"
 		}
 		log.Info("peer",
-			"key", shortKey(p.PublicKey),
+			"peer", peerLabel(p.Name, p.TunnelIP, p.PublicKey),
+			"pubkey", shortKey(p.PublicKey),
 			"endpoint", p.Endpoint,
 			"handshake_age", ageLabel(now, p.LastHandshake),
 			"status", status)
@@ -243,4 +246,18 @@ func shortKey(k string) string {
 		return k[:8] + "…"
 	}
 	return k
+}
+
+// peerLabel picks the most readable identifier for logs and the IDS feed: a
+// human name if one is known, else the peer's mesh/tunnel IP, else the short
+// public key. The kernel exposes no name, so today this resolves to the wg0 IP.
+func peerLabel(name, tunnelIP, pubKey string) string {
+	switch {
+	case name != "":
+		return name
+	case tunnelIP != "":
+		return tunnelIP
+	default:
+		return shortKey(pubKey)
+	}
 }

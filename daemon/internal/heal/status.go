@@ -39,6 +39,7 @@ func (s State) String() string {
 type PeerStatus struct {
 	Peer          string
 	Name          string
+	TunnelIP      string
 	State         State
 	LastHandshake time.Time
 	Endpoint      string
@@ -77,6 +78,7 @@ func Step(now time.Time, peers []PeerState, prev map[string]PeerMemo, cfg Config
 		out = append(out, PeerStatus{
 			Peer:          p.PublicKey,
 			Name:          p.Name,
+			TunnelIP:      p.TunnelIP,
 			State:         state,
 			LastHandshake: p.LastHandshake,
 			Endpoint:      p.Endpoint,

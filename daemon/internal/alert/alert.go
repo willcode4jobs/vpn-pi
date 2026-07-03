@@ -18,6 +18,7 @@ import (
 type Event struct {
 	Peer          string
 	Name          string
+	TunnelIP      string
 	From          heal.State
 	To            heal.State
 	LastHandshake time.Time
@@ -57,6 +58,7 @@ func Diff(last map[string]heal.State, statuses []heal.PeerStatus, now time.Time)
 			events = append(events, Event{
 				Peer:          s.Peer,
 				Name:          s.Name,
+				TunnelIP:      s.TunnelIP,
 				From:          prev,
 				To:            s.State,
 				LastHandshake: s.LastHandshake,

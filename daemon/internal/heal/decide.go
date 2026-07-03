@@ -40,6 +40,7 @@ func decidePeer(now time.Time, role Role, p PeerState, history []ActionRecord, c
 			Kind:   ActionReResolve,
 			Peer:   p.PublicKey,
 			Name:   p.Name,
+			IP:     p.TunnelIP,
 			Reason: fmt.Sprintf("stale (%s); re-resolve attempt %d/%d", p.stalenessLabel(now), reResolves+1, cfg.MaxReResolve),
 		}
 	case role == RoleSpoke && bounces < cfg.MaxBounce:
@@ -47,6 +48,7 @@ func decidePeer(now time.Time, role Role, p PeerState, history []ActionRecord, c
 			Kind:   ActionBounceInterface,
 			Peer:   p.PublicKey,
 			Name:   p.Name,
+			IP:     p.TunnelIP,
 			Reason: fmt.Sprintf("stale (%s); %d re-resolves exhausted; spoke bounce attempt %d/%d", p.stalenessLabel(now), reResolves, bounces+1, cfg.MaxBounce),
 		}
 	default:
@@ -54,6 +56,7 @@ func decidePeer(now time.Time, role Role, p PeerState, history []ActionRecord, c
 			Kind:   ActionAlert,
 			Peer:   p.PublicKey,
 			Name:   p.Name,
+			IP:     p.TunnelIP,
 			Reason: fmt.Sprintf("stale (%s); %s remediation exhausted; latched degraded", p.stalenessLabel(now), role),
 		}
 	}

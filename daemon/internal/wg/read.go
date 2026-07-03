@@ -59,11 +59,28 @@ func mapPeers(peers []wgtypes.Peer) []heal.PeerState {
 	for _, p := range peers {
 		out = append(out, heal.PeerState{
 			PublicKey:     p.PublicKey.String(),
+			TunnelIP:      firstAllowedIP(p.AllowedIPs),
 			LastHandshake: p.LastHandshakeTime,
 			Endpoint:      endpointStr(p.Endpoint),
 		})
 	}
 	return out
+}
+
+// firstAllowedIP picks a peer's tunnel address for display: the kernel exposes
+// no node name, but each peer's AllowedIPs carries its mesh IP. Prefer a host
+// route (/32 or /128 — the peer's own address, e.g. 10.42.0.5) over a broader
+// subnet (a relay may allow 10.42.0.0/24), falling back to the first entry.
+func firstAllowedIP(nets []net.IPNet) string {
+	if len(nets) == 0 {
+		return ""
+	}
+	for _, n := range nets {
+		if ones, bits := n.Mask.Size(); ones == bits {
+			return n.IP.String()
+		}
+	}
+	return nets[0].IP.String()
 }
 
 // endpointStr renders a peer endpoint, tolerating the nil that the kernel
