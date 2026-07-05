@@ -148,16 +148,19 @@ async function api(path,opts={}){
   if(o.json!==undefined){o.method=o.method||"POST";o.headers["content-type"]="application/json";o.body=JSON.stringify(o.json);delete o.json;}
   if(adminTok())o.headers["x-admin-token"]=adminTok(); // one admin credential: unlocks operator + admin
   const r=await fetch(path,o);
+  if(o.blob&&r.ok)return await r.blob(); // binary responses (file downloads); errors fall through below
   const ct=r.headers.get("content-type")||"";
   const body=ct.includes("json")?await r.json().catch(()=>null):await r.text();
   if(!r.ok)throw new Error((body&&body.error)||("HTTP "+r.status));
   return body;
 }
 
-async function refreshGate(){try{const g=await api("/api/gate");const c=document.getElementById("gate");const on=g.state==="internet";const tag=g.target_label?` · ${g.target_label}`:"";c.className="chip "+(on?"internet":"island");c.innerHTML=`<span class="dot"></span>${g.reachable===false?`Gate node${tag} unreachable`:(on?"Internet access":"Island mode")+tag}`;}catch{}}
+async function refreshGate(){try{const g=await api("/api/gate");const c=document.getElementById("gate");const on=g.state==="internet";const tag=g.target_label?` · ${esc(g.target_label)}`:"";c.className="chip "+(on?"internet":"island");c.innerHTML=`<span class="dot"></span>${g.reachable===false?`Gate node${tag} unreachable`:(on?"Internet access":"Island mode")+tag}`;}catch{}}
 
 let chatPoll=null; // Chat's live-refresh interval; cleared whenever we rebuild a view so it never leaks
+let renderGen=0; // bumped every render(); async views capture it and bail if a newer render ran
 function render(){
+  renderGen++;
   if(chatPoll){clearInterval(chatPoll);chatPoll=null;}
   const nav=document.getElementById("tabs");nav.innerHTML="";
   TABS.forEach(([name])=>{const b=el(`<button>${name}</button>`);if(name===tab)b.className="on";b.onclick=()=>{tab=name;render();};nav.append(b);});
@@ -167,10 +170,11 @@ function render(){
 
 // ---------- Home ----------
 async function Home(v){
+  const gen=renderGen;
   const hero=el(`<div class="hero island"><div class="eyebrow">…</div><div class="htitle">Loading…</div></div>`);v.append(hero);
   const c=el(`<div class="card"><div id="b" class="empty">Loading…</div></div>`);v.append(c);
   try{
-    const d=await api("/api/home");const on=d.gate.state==="internet";const gtag=d.gate.target_label?` · ${d.gate.target_label}`:"";
+    const d=await api("/api/home");if(gen!==renderGen)return;const on=d.gate.state==="internet";const gtag=d.gate.target_label?` · ${esc(d.gate.target_label)}`:"";
     hero.className="hero "+(on?"internet":"island");
     hero.innerHTML=`<div class="eyebrow">${on?"INTERNET ACCESS":"ISLAND MODE"}${gtag}</div>
       <div class="htitle">${on?"You're hopping the Island":"You're on the island"}</div>
@@ -193,11 +197,13 @@ async function Home(v){
 
 // ---------- Friends (streamlined) ----------
 async function Friends(v){
+  const gen=renderGen;
   const list=el(`<div class="card"><h2>Your friends</h2><div id="l" class="empty">Loading…</div></div>`);v.append(list);
   let pending=[];
   try{
     const d=await api("/api/friends");pending=d.pending;
     const me=await api("/api/identity").catch(()=>null);
+    if(gen!==renderGen)return; // a newer render wiped the view while we were loading
     const meRow=me?`<div class="row"><div class="avatar">${initial(me.label)}</div><div class="grow"><div class="name">${esc(me.label)} <span class="meta">· your friend code</span></div><div class="meta key" data-copy="${esc(me.code)}" title="your friend code — click to copy" style="font-weight:700;color:var(--ink)">${esc(me.code)}</div></div><button class="btn tonal sm" data-copy="${esc(me.code)}">Copy code</button><button class="btn text sm" data-copy="${esc(me.ed25519)}">Key</button></div>`:"";
     const friendRows=d.friends.map((f,i)=>`
       <div class="row"><div class="avatar">${initial(f.peer.label)}</div>
@@ -213,6 +219,7 @@ async function Friends(v){
     list.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(b.dataset.copy));
     list.querySelectorAll("[data-rm]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friend? They can no longer write to this node."))return;try{await api("/api/friends/"+encodeURIComponent(b.dataset.rm),{method:"DELETE"});snack("Friend removed");render();}catch(e){snack(e.message,true);}});
   }catch(e){snack(e.message,true);}
+  if(gen!==renderGen)return; // don't append the cards below into a newer view
 
   // Add a friend — one card, two methods via a segmented switch:
   //   By code  → resolve via the registry, signed handshake over the mesh (primary)
@@ -248,7 +255,7 @@ async function Friends(v){
   });
 
   // By code
-  const doAdd=async()=>{const code=add.querySelector("#code").value.trim();if(!code)return;try{const r=await api("/api/friends/add",{json:{code}});add.querySelector("#code").value="";snack(r.sent?`Request sent to ${r.to} — they'll approve it`:`Couldn't reach ${r.to||"them"} — are they online?`,!r.sent);}catch(e){snack(e.message,true);}};
+  const doAdd=async()=>{const btn=add.querySelector("#addbtn");if(btn.disabled)return;const code=add.querySelector("#code").value.trim();if(!code)return;btn.disabled=true;try{const r=await api("/api/friends/add",{json:{code}});add.querySelector("#code").value="";snack(r.sent?`Request sent to ${r.to} — they'll approve it`:`Couldn't reach ${r.to||"them"} — are they online?`,!r.sent);}catch(e){snack(e.message,true);}finally{btn.disabled=false;}};
   add.querySelector("#addbtn").onclick=doAdd;
   add.querySelector("#code").addEventListener("keydown",e=>{if(e.key==="Enter")doAdd();});
 
@@ -273,19 +280,28 @@ async function Friends(v){
 
 // ---------- Files ----------
 async function Files(v){
+  const gen=renderGen;
   const c=el(`<div class="card"><h2>Shared files</h2>
     <div class="row" style="border:0;padding-bottom:.5rem"><input type="file" id="f" style="border:0;padding:.4rem 0"><button class="btn filled" id="up">Upload</button></div>
     <div id="l" class="empty">Loading…</div></div>`);v.append(c);
-  c.querySelector("#up").onclick=async()=>{const f=c.querySelector("#f").files[0];if(!f){snack("Pick a file first");return;}const fd=new FormData();fd.append("file",f);try{await api("/api/files",{method:"POST",body:fd});snack("Uploaded");render();}catch(e){snack(e.message,true);}};
+  c.querySelector("#up").onclick=async(ev)=>{const btn=ev.currentTarget;if(btn.disabled)return;const f=c.querySelector("#f").files[0];if(!f){snack("Pick a file first");return;}const fd=new FormData();fd.append("file",f);btn.disabled=true;try{await api("/api/files",{method:"POST",body:fd});snack("Uploaded");render();}catch(e){snack(e.message,true);}finally{btn.disabled=false;}};
   try{const d=await api("/api/files");
-    c.querySelector("#l").outerHTML=`<div id="l">${d.files.map(f=>`<div class="row"><div class="avatar">${ICONS.download}</div><div class="grow"><div class="name"><a href="/api/files/${f.id}/download">${esc(f.name)}</a></div><div class="meta">${(f.size/1024).toFixed(1)} KB</div></div><button class="btn danger sm" data-del="${f.id}">Delete</button></div>`).join("")||`<div class="empty">No files shared yet</div>`}</div>`;
-    c.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{try{await api("/api/files/"+b.dataset.del,{method:"DELETE"});render();}catch(e){snack(e.message,true);}});
+    if(gen!==renderGen)return; // a newer render wiped the view while we were loading
+    c.querySelector("#l").outerHTML=`<div id="l">${d.files.map(f=>`<div class="row"><div class="avatar">${ICONS.download}</div><div class="grow"><div class="name"><a href="#" data-dl="${esc(f.id)}" data-name="${esc(f.name)}">${esc(f.name)}</a></div><div class="meta">${(f.size/1024).toFixed(1)} KB</div></div><button class="btn danger sm" data-del="${esc(f.id)}">Delete</button></div>`).join("")||`<div class="empty">No files shared yet</div>`}</div>`;
+    // Download through api() so the admin token is attached and failures surface as a snackbar
+    c.querySelectorAll("[data-dl]").forEach(a=>a.onclick=async(ev)=>{ev.preventDefault();if(a.dataset.busy)return;a.dataset.busy="1";try{
+      const b=await api("/api/files/"+encodeURIComponent(a.dataset.dl)+"/download",{blob:true});
+      const u=URL.createObjectURL(b);const t=document.createElement("a");t.href=u;t.download=a.dataset.name||"file";document.body.appendChild(t);t.click();t.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);
+    }catch(e){snack(e.message,true);}finally{delete a.dataset.busy;}});
+    c.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{try{await api("/api/files/"+encodeURIComponent(b.dataset.del),{method:"DELETE"});render();}catch(e){snack(e.message,true);}});
   }catch(e){snack(e.message,true);}
 }
 
 // ---------- Chat ----------
 async function Chat(v){
+  const gen=renderGen;
   let friends=[];try{friends=(await api("/api/friends")).friends;}catch(e){snack(e.message,true);}
+  if(gen!==renderGen)return; // a newer render wiped the view — don't append or start a poller
   if(!friends.length){v.append(el(`<div class="card"><h2>Messages</h2><div class="empty">Add a friend first to start chatting.</div></div>`));return;}
   const c=el(`<div class="card"><h2>Messages</h2>
     <label class="f"><span>Conversation</span><select id="peer">${friends.map(f=>`<option value="${esc(f.peer.ed25519)}">${esc(f.peer.label)}</option>`).join("")}</select></label>
@@ -295,9 +311,11 @@ async function Chat(v){
   let lastSig=""; // skip DOM churn when the thread hasn't changed (the poller runs every few seconds)
   // force=true on user actions (peer switch / send): always redraw and pin to the newest message.
   async function load(force){try{
-    const fr=friends.find(f=>f.peer.ed25519===sel.value);const peerLabel=fr?fr.peer.label:"friend";
-    const d=await api("/api/messages?peer="+encodeURIComponent(sel.value));
-    const sig=sel.value+"|"+d.thread.length+"|"+(d.thread.at(-1)?.ts||"");
+    const peer=sel.value; // pin the conversation this fetch is for
+    const fr=friends.find(f=>f.peer.ed25519===peer);const peerLabel=fr?fr.peer.label:"friend";
+    const d=await api("/api/messages?peer="+encodeURIComponent(peer));
+    if(peer!==sel.value)return; // user switched conversations mid-flight — don't overwrite the new thread
+    const sig=peer+"|"+d.thread.length+"|"+(d.thread.at(-1)?.ts||"");
     if(!force&&sig===lastSig)return; // nothing new — leave the DOM (and any text selection) alone
     lastSig=sig;
     const th=c.querySelector("#th");
@@ -307,7 +325,7 @@ async function Chat(v){
   }catch(e){if(force)snack(e.message,true);}} // stay quiet on background poll failures
   sel.onchange=()=>load(true);load(true);
   chatPoll=setInterval(load,3000); // live refresh; render() clears this when you leave the Chat tab
-  const send=async()=>{const body=c.querySelector("#body").value.trim();if(!body)return;try{const r=await api("/api/messages",{json:{peer:sel.value,body}});c.querySelector("#body").value="";if(!r.delivered)snack("Sent — friend is offline");load(true);}catch(e){snack(e.message,true);}};
+  const send=async()=>{const btn=c.querySelector("#send");if(btn.disabled)return;const body=c.querySelector("#body").value.trim();if(!body)return;btn.disabled=true;try{const r=await api("/api/messages",{json:{peer:sel.value,body}});c.querySelector("#body").value="";if(!r.delivered)snack("Sent — friend is offline");load(true);}catch(e){snack(e.message,true);}finally{btn.disabled=false;}};
   c.querySelector("#send").onclick=send;c.querySelector("#body").addEventListener("keydown",e=>{if(e.key==="Enter")send();});
 }
 
@@ -329,7 +347,7 @@ async function Admin(v){
   const gstat=async()=>{try{const g=await api("/api/gate");const on=g.state==="internet";const c=gc.querySelector("#gs");const node=gc.querySelector("#gnode");if(node)node.textContent=g.target_label?`· ${g.target_label}`:"";if(g.reachable===false){c.className="chip island";c.innerHTML=`<span class="dot"></span>Unreachable`;return;}c.className="chip "+(on?"internet":"island");c.innerHTML=`<span class="dot"></span>${on?"Internet":"Island"}${on&&g.closes_at?` · ${new Date(g.closes_at).toLocaleTimeString()}`:""}`;}catch{}};
   const glog=async()=>{try{const l=await api("/admin/gate/log");gc.querySelector("#log").innerHTML=l.log.slice(-5).reverse().map(e=>`${new Date(e.at).toLocaleTimeString()} · <b>${esc(e.action)}</b> ${esc(e.reason||"")}`).join("<br>");}catch{}};
   gstat();glog();
-  gc.querySelector("#open").onclick=async()=>{const text=gc.querySelector("#canary").value.trim();try{const r=await api("/api/gate/open",{json:text?{text}:{}});snack(r.opened?"Gate opened":"Denied: "+(r.reason||""),!r.opened);gstat();glog();refreshGate();}catch(e){snack(/not an admin app/.test(e.message)?"This node can't open the gate — use the admin app (the machine holding the admin key)":("Open failed: "+e.message),true);}};
+  gc.querySelector("#open").onclick=async(ev)=>{const btn=ev.currentTarget;if(btn.disabled)return;const text=gc.querySelector("#canary").value.trim();btn.disabled=true;try{const r=await api("/api/gate/open",{json:text?{text}:{}});snack(r.opened?"Gate opened":"Denied: "+(r.reason||""),!r.opened);gstat();glog();refreshGate();}catch(e){snack(/not an admin app/.test(e.message)?"This node can't open the gate — use the admin app (the machine holding the admin key)":("Open failed: "+e.message),true);}finally{btn.disabled=false;}};
   gc.querySelector("#close").onclick=async()=>{try{await api("/admin/gate/close",{method:"POST"});snack("Gate closed");gstat();glog();refreshGate();}catch(e){snack(e.message,true);}};
 
   const fc=el(`<div class="card"><h2>Manage friendships</h2><p class="sub">Remove a friendship.</p><div id="l" class="empty">Loading…</div></div>`);v.append(fc);
@@ -342,9 +360,11 @@ async function Admin(v){
 
 // ---------- Security (admin-only, collector node only): the mesh IDS feed ----------
 async function Security(v){
+  const gen=renderGen;
   const c=el(`<div class="card"><h2>Security</h2><p class="sub">fail2ban blocks and degraded links across every node.</p><div id="b" class="empty">Loading…</div></div>`);v.append(c);
   try{
     const d=await api("/admin/events");
+    if(gen!==renderGen)return; // a newer render wiped the view while we were loading
     const rows=d.nodes.flatMap(n=>n.events.map(e=>({...e,node:n.label,at:n.at})));
     rows.sort((a,b)=>b.at.localeCompare(a.at));
     c.querySelector("#b").outerHTML=`<div id="b">${rows.length?rows.map(e=>`<div class="row"><div class="avatar">${e.kind==="fail2ban"?ICONS.block:ICONS.alert}</div><div class="grow"><div class="name">${esc(e.subject)} <span class="meta">· ${esc(e.kind)}</span></div><div class="meta">${esc(e.detail)} — on ${esc(e.node)} · ${new Date(e.at).toLocaleString()}</div></div></div>`).join(""):`<div class="empty">No events reported yet</div>`}</div>`;
@@ -423,7 +443,7 @@ if(ADMIN){
   const b=el('<button class="iconbtn lockbtn" id="auth"></button>');
   document.querySelector(".bar").insertBefore(b,document.getElementById("who"));
   refreshAuth=()=>{const set=!!adminTok();b.innerHTML=(set?UNLOCK:LOCK)+"<span>"+(set?"Admin":"Unlock admin")+"</span>";b.classList.toggle("on",set);b.title=set?"Admin unlocked — click to change or clear":"Admin locked — click to enter the admin token";};
-  b.onclick=()=>{const v=prompt("Admin token — the password that unlocks managing this node (friends, gate, settings). Set on the device as ISLAND_ADMIN_TOKEN; leave blank in demo mode.",adminTok());if(v!==null){localStorage.setItem("adminTok",v.trim());refreshAuth();snack(v.trim()?"Admin unlocked":"Admin cleared");render();}};
+  b.onclick=()=>{const v=prompt("Admin token — the password that unlocks managing this node (friends, gate, settings). Set on the device as ISLAND_ADMIN_TOKEN; leave blank in demo mode.","");if(v!==null){localStorage.setItem("adminTok",v.trim());refreshAuth();snack(v.trim()?"Admin unlocked":"Admin cleared");render();}};
   refreshAuth();
 }
 // First /admin visit on a fresh node: claim the one-time token reveal (server consumes
