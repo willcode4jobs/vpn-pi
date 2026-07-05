@@ -9,6 +9,7 @@
 package alert
 
 import (
+	"slices"
 	"time"
 
 	"github.com/willcode4jobs/vpn-pi/daemon/internal/heal"
@@ -33,7 +34,7 @@ func (e Event) Recovered() bool {
 }
 
 // Kind names the transition for logging: "recovered" for a return to ok,
-// otherwise the new state ("stale" / "degraded").
+// otherwise the new state ("stale" / "degraded" / "gone").
 func (e Event) Kind() string {
 	if e.Recovered() {
 		return "recovered"
@@ -44,8 +45,11 @@ func (e Event) Kind() string {
 // Diff compares the previous per-peer states against the current classification
 // and returns one Event per peer whose state changed, plus the updated state map
 // to persist for the next tick. A peer absent from last is treated as having
-// been OK, so a peer first seen already-stale still emits a transition. Pure: it
-// does not mutate last, and output preserves input order.
+// been OK, so a peer first seen already-stale still emits a transition. A peer
+// present last cycle but absent now emits a synthetic gone transition, so a
+// removed (possibly degraded) peer doesn't silently vanish from the feed. Pure:
+// it does not mutate last, and output preserves input order (gone events come
+// last, sorted by peer key for determinism).
 func Diff(last map[string]heal.State, statuses []heal.PeerStatus, now time.Time) ([]Event, map[string]heal.State) {
 	next := make(map[string]heal.State, len(statuses))
 	var events []Event
@@ -67,6 +71,24 @@ func Diff(last map[string]heal.State, statuses []heal.PeerStatus, now time.Time)
 			})
 		}
 		next[s.Peer] = s.State
+	}
+	// Synthetic transitions for peers that vanished from the interface since the
+	// last cycle. They carry only the peer key and prior state — the peer's name,
+	// IP and endpoint left with it.
+	var gone []string
+	for peer := range last {
+		if _, still := next[peer]; !still {
+			gone = append(gone, peer)
+		}
+	}
+	slices.Sort(gone)
+	for _, peer := range gone {
+		events = append(events, Event{
+			Peer: peer,
+			From: last[peer],
+			To:   heal.StateGone,
+			At:   now,
+		})
 	}
 	return events, next
 }

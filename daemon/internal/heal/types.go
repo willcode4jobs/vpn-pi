@@ -128,16 +128,17 @@ type ActionRecord struct {
 // Config holds the decision core's tunables. Two threshold groups live here and
 // are deliberately independent:
 //   - the time-tiered HEALTH classification (StaleAfter/DegradedAfter/RestoredHold),
-//     which drives the IDS feed and is intentionally aggressive; and
+//     which drives the IDS feed and slightly leads remediation; and
 //   - the REMEDIATION trigger (Staleness) + circuit breaker (Window/MaxReResolve/
 //     MaxBounce), kept conservative so idle-but-healthy peers aren't re-resolved on
 //     every handshake gap. A peer can read "degraded" in the feed while remediation
 //     still holds off until Staleness — that decoupling is by design.
 type Config struct {
-	// StaleAfter: handshake age ≥ this classifies a peer as stale. NB: WireGuard
-	// re-handshakes only ~every 120s even on healthy links, so a low value (30s)
-	// makes healthy peers cycle through stale/degraded between handshakes — an
-	// accepted, intentional trade for fast visibility, not remediation.
+	// StaleAfter: handshake age ≥ this classifies a peer as stale. It must sit
+	// above WireGuard's healthy-link rekey envelope (~120s REKEY_AFTER_TIME plus
+	// a few seconds of retry slack, ≈135s): even a perfectly healthy link renews
+	// its handshake only that often, so any lower value classifies healthy peers
+	// stale between rekeys and makes ok unreachable after a first excursion.
 	StaleAfter time.Duration
 	// DegradedAfter: handshake age ≥ this classifies a peer as degraded. A
 	// never-handshaked peer is infinitely stale, so it reads degraded.
@@ -163,12 +164,16 @@ type Config struct {
 	MaxBounce int
 }
 
-// DefaultConfig returns the classification ladder (30s stale / 60s degraded /
+// DefaultConfig returns the classification ladder (150s stale / 180s degraded /
 // 30s restored-hold) plus conservative, flap-resistant remediation defaults.
+// 150s is the fastest *sound* stale threshold: handshake age alone cannot
+// distinguish a dead tunnel from a healthy idle one before the ~135s rekey
+// envelope elapses. 180s (degraded) deliberately matches Staleness, so the feed
+// reads degraded at the same moment the act path starts remediating.
 func DefaultConfig() Config {
 	return Config{
-		StaleAfter:    30 * time.Second,
-		DegradedAfter: 60 * time.Second,
+		StaleAfter:    150 * time.Second,
+		DegradedAfter: 180 * time.Second,
 		RestoredHold:  30 * time.Second,
 		Staleness:     180 * time.Second,
 		Window:        10 * time.Minute,

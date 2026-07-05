@@ -89,6 +89,61 @@ func TestStepHoldInterrupted(t *testing.T) {
 	}
 }
 
+// TestDefaultConfigHealthyPeerReachesOK drives DefaultConfig through a realistic
+// WireGuard timeline: a healthy link renews its handshake only ~every 120s
+// (REKEY_AFTER_TIME), so with a 30s poll a peer's handshake age routinely sits
+// at 90–130s between rekeys. After an outage and recovery the peer must ride
+// restored back to ok — and then STAY ok across rekey gaps. (Under the old 30s
+// StaleAfter this was impossible: StateOK was unreachable after a peer's first
+// excursion and the "recovered" event was dead code.)
+func TestDefaultConfigHealthyPeerReachesOK(t *testing.T) {
+	c := DefaultConfig()
+	const rekey = 120 * time.Second // WireGuard REKEY_AFTER_TIME on a healthy link
+	if c.StaleAfter <= rekey {
+		t.Fatalf("StaleAfter (%v) must exceed the ~%v rekey interval or healthy peers read stale between rekeys", c.StaleAfter, rekey)
+	}
+
+	// Outage: last handshake 10 minutes ago → degraded.
+	down := PeerState{PublicKey: "a", Name: "a", LastHandshake: now.Add(-10 * time.Minute)}
+	statuses, memo := Step(now, []PeerState{down}, nil, c)
+	if statuses[0].State != StateDegraded {
+		t.Fatalf("t0: want degraded, got %s", statuses[0].State)
+	}
+
+	// Recovery: a handshake lands at t+20s, then renews only every 120s. Poll
+	// every 30s for 10 minutes and record the state sequence.
+	handshake := now.Add(20 * time.Second)
+	var seq []State
+	for i := 1; i <= 20; i++ {
+		at := now.Add(time.Duration(i) * 30 * time.Second)
+		for !handshake.Add(rekey).After(at) {
+			handshake = handshake.Add(rekey) // healthy link: rekey when due
+		}
+		p := PeerState{PublicKey: "a", Name: "a", LastHandshake: handshake}
+		statuses, memo = Step(at, []PeerState{p}, memo, c)
+		seq = append(seq, statuses[0].State)
+	}
+
+	if seq[0] != StateRestored {
+		t.Fatalf("first tick after recovery: want restored, got %s (seq %v)", seq[0], seq)
+	}
+	reached := -1
+	for i, s := range seq {
+		if s == StateOK {
+			reached = i
+			break
+		}
+	}
+	if reached == -1 {
+		t.Fatalf("peer never reached ok: %v", seq)
+	}
+	for i := reached; i < len(seq); i++ {
+		if seq[i] != StateOK {
+			t.Fatalf("tick %d: healthy peer left ok after recovery (seq %v)", i+1, seq)
+		}
+	}
+}
+
 // TestStepOrderAndPassthrough checks output order and the passthrough fields.
 func TestStepOrderAndPassthrough(t *testing.T) {
 	peers := []PeerState{

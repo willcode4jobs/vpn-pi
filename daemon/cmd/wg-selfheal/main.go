@@ -118,6 +118,7 @@ func tick(log *slog.Logger, reader *wg.Reader, role heal.Role, cfg heal.Config, 
 	// Health classification is time-tiered and stateful (the restored hold needs
 	// the prior state); remediation below is separate and stays on cfg.Staleness.
 	statuses, nextMemo := heal.Step(now, peers, st.memo, cfg)
+	pruneCache(st.endpointCache, statuses)
 	cacheHealthy(st.endpointCache, statuses)
 
 	events, _ := alert.Diff(heal.StatesOf(st.memo), statuses, now)
@@ -137,11 +138,17 @@ func tick(log *slog.Logger, reader *wg.Reader, role heal.Role, cfg heal.Config, 
 	}
 }
 
+// endpointAsserter is the one tunnel-touching capability remediate needs.
+// Satisfied by *wg.Reader; a test fake stands in for it off-box.
+type endpointAsserter interface {
+	ReassertEndpoint(publicKey, endpoint string) error
+}
+
 // remediate executes a single action. Only re-assert touches the tunnel; alert
 // is surfaced by the transition layer. A re-assert with no cached endpoint
 // (e.g. a passive, inbound-only peer) is un-actionable and skipped quietly — the
 // stale transition already surfaced it once.
-func remediate(log *slog.Logger, reader *wg.Reader, st *loopState, a heal.Action, now time.Time, dryRun bool) {
+func remediate(log *slog.Logger, reader endpointAsserter, st *loopState, a heal.Action, now time.Time, dryRun bool) {
 	who := peerLabel(a.Name, a.IP, a.Peer)
 	switch a.Kind {
 	case heal.ActionReResolve:
@@ -154,12 +161,16 @@ func remediate(log *slog.Logger, reader *wg.Reader, st *loopState, a heal.Action
 			log.Info("would re-assert endpoint", "peer", who, "endpoint", ep)
 			return
 		}
+		// Record the attempt whether or not it succeeds: the circuit breaker
+		// counts attempts, and a permanently-failing re-assert would otherwise
+		// never trip it — the daemon would retry forever instead of latching
+		// degraded once MaxReResolve is exhausted.
+		st.history = append(st.history, heal.ActionRecord{Peer: a.Peer, Kind: heal.ActionReResolve, At: now})
 		if err := reader.ReassertEndpoint(a.Peer, ep); err != nil {
 			log.Error("re-assert failed", "peer", who, "endpoint", ep, "err", err)
 			return
 		}
 		log.Info("re-asserted endpoint", "peer", who, "endpoint", ep, "reason", a.Reason)
-		st.history = append(st.history, heal.ActionRecord{Peer: a.Peer, Kind: heal.ActionReResolve, At: now})
 
 	case heal.ActionAlert:
 		// Surfaced by the degraded transition in the alert layer; nothing to run.
@@ -176,10 +187,26 @@ func remediate(log *slog.Logger, reader *wg.Reader, st *loopState, a heal.Action
 func cacheHealthy(cache map[string]string, statuses []heal.PeerStatus) {
 	for _, s := range statuses {
 		// ok and restored both mean a fresh handshake, so the endpoint is live.
-		// Caching on restored too matters under the aggressive 30s threshold,
-		// where a healthy peer may sit in restored more than in strict ok.
+		// Caching on restored too means a peer recovering from an outage
+		// refreshes its cached endpoint before it has served out the hold.
 		if (s.State == heal.StateOK || s.State == heal.StateRestored) && s.Endpoint != "" {
 			cache[s.Peer] = s.Endpoint
+		}
+	}
+}
+
+// pruneCache drops cached endpoints for peers no longer present on the
+// interface (mirroring how st.memo self-prunes via Step's nextMemo). Without
+// this, a removed/rotated key's entry lives for the daemon lifetime, and a
+// re-added key could be pushed a stale endpoint.
+func pruneCache(cache map[string]string, statuses []heal.PeerStatus) {
+	present := make(map[string]bool, len(statuses))
+	for _, s := range statuses {
+		present[s.Peer] = true
+	}
+	for k := range cache {
+		if !present[k] {
+			delete(cache, k)
 		}
 	}
 }

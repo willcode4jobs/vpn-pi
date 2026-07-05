@@ -17,6 +17,10 @@ const (
 	// StateRestored — a stale/degraded peer that just returned to healthy and is
 	// serving out its RestoredHold before it is trusted as ok (recovery debounce).
 	StateRestored
+	// StateGone — synthetic marker for a peer present last cycle but since
+	// removed from the interface. Never produced by Step; the alert layer emits
+	// it so a (possibly degraded) peer doesn't silently vanish from the feed.
+	StateGone
 )
 
 func (s State) String() string {
@@ -29,6 +33,8 @@ func (s State) String() string {
 		return "degraded"
 	case StateRestored:
 		return "restored"
+	case StateGone:
+		return "gone"
 	default:
 		return "unknown"
 	}
