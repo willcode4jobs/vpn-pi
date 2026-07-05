@@ -139,6 +139,10 @@ interface Ctx {
   share: FileShare;
   msgs: MessageBook;
   gate: Gate; // the canary-driven internet gate (default island)
+  // Spokes (not the gate node, not an admin app): a read-only pointer to the gate node's
+  // /api/gate so their chip reflects the REAL mesh mode. No admin key, no open ability.
+  gateStatusUrl: string;
+  gateStatusLabel: string;
   adminApp: AdminApp | null; // Option C: this node holds the admin key → can mint + open
   registry: RegistryStore | null; // friend-code directory (polaris; ISLAND_REGISTRY=1)
   registryUrl: string; // where this node announces/resolves codes (ISLAND_REGISTRY_URL)
@@ -203,6 +207,18 @@ async function boot(args: Args): Promise<Ctx> {
   const canaryKeyword = process.env.ISLAND_CANARY_KEYWORD ?? "GREEN18";
   const canaryFreshnessS = numConfig(process.env.ISLAND_CANARY_FRESHNESS, "ISLAND_CANARY_FRESHNESS", 120);
   const gateTtlS = numConfig(process.env.ISLAND_GATE_TTL, "ISLAND_GATE_TTL", 2700); // 45 min
+
+  // Read-only gate-status pointer for a plain spoke (set to the gate node's URL, e.g.
+  // http://10.42.0.2:8787). Leave UNSET on the gate node (vega) and on the admin app.
+  const gateStatusUrl = process.env.ISLAND_GATE_STATUS_URL ?? "";
+  let gateStatusLabel = process.env.ISLAND_GATE_STATUS_LABEL ?? "";
+  if (!gateStatusLabel && gateStatusUrl) {
+    try {
+      gateStatusLabel = new URL(gateStatusUrl).hostname;
+    } catch {
+      gateStatusLabel = gateStatusUrl;
+    }
+  }
 
   // admin allowlist: configured pubkeys in prod; a throwaway admin in --mock so the
   // laptop demo can mint+send a canary without a separate admin app.
@@ -318,6 +334,8 @@ async function boot(args: Args): Promise<Ctx> {
     share,
     msgs,
     gate,
+    gateStatusUrl,
+    gateStatusLabel,
     adminApp,
     registry,
     registryUrl: process.env.ISLAND_REGISTRY_URL ?? "",
@@ -421,24 +439,30 @@ async function deliver(wg0: string, port: number, path: string, body: unknown): 
 async function gateView(
   ctx: Ctx,
 ): Promise<{ state: string; closesAt: string | null; target: string | null; targetLabel: string | null; reachable: boolean }> {
+  // Where does the real gate live, from this node's perspective? An admin app (builder)
+  // points at the gate node it controls; a plain spoke points at it read-only via
+  // ISLAND_GATE_STATUS_URL. Either way, show the TARGET's gate, not this node's empty
+  // local one. The gate node itself has neither set → returns its real local state.
   const aa = ctx.adminApp;
-  if (!aa?.target) {
+  const source = aa?.target || ctx.gateStatusUrl;
+  const label = (aa?.target ? aa.targetLabel : ctx.gateStatusLabel) || null;
+  if (!source) {
     const gs = ctx.gate.state();
     return { state: gs.state, closesAt: gs.closesAt, target: null, targetLabel: null, reachable: true };
   }
   try {
-    const r = await fetch(`${aa.target}/api/gate`, { signal: AbortSignal.timeout(5_000) });
+    const r = await fetch(`${source}/api/gate`, { signal: AbortSignal.timeout(5_000) });
     const j = (await r.json()) as { state?: string; closes_at?: string | null };
     return {
       state: j.state ?? "unknown",
       closesAt: j.closes_at ?? null,
-      target: aa.target,
-      targetLabel: aa.targetLabel,
+      target: source,
+      targetLabel: label,
       reachable: true,
     };
   } catch {
     // Target unreachable: report island (fail-safe — never claim the gate is open) + reachable:false.
-    return { state: "island", closesAt: null, target: aa.target, targetLabel: aa.targetLabel, reachable: false };
+    return { state: "island", closesAt: null, target: source, targetLabel: label, reachable: false };
   }
 }
 
