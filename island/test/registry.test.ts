@@ -31,7 +31,7 @@ test("registerAnnounce stores under code = fingerprint(key), rejects bad sigs", 
 
   const code = await registerAnnounce(store, record, sig);
   expect(code).toBe(await fingerprint(record.ed25519));
-  expect(store.get(code)).toEqual(record);
+  expect(store.get(code)).toEqual({ ...record, sig });
 
   expect(registerAnnounce(store, record, "AAAA")).rejects.toThrow(RegistryError);
 });

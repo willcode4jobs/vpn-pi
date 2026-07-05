@@ -4,7 +4,8 @@
 //
 // Two properties keep it honest (see docs/phase-two/FRIEND-CODES.md):
 //   - polaris CANNOT MITM: the code is a fingerprint of the key, and resolve()
-//     re-derives it and checks the match. A swapped key fails the check.
+//     re-derives it and checks the match. A swapped key fails the check; a swapped
+//     x25519/wg0 under the real key fails the record's self-signature re-check.
 //   - polaris CANNOT be squatted: announce() carries a SELF-signature, so you can
 //     only register your own key's code.
 
@@ -87,10 +88,10 @@ export class RegistryStore {
       )
       .run(code, r.ed25519, r.x25519, r.wg0, r.label, sig, announced);
   }
-  get(code: string): RegistryRecord | null {
+  get(code: string): (RegistryRecord & { sig: string }) | null {
     return (this.db
-      .query("SELECT ed25519,x25519,wg0,label FROM registry WHERE code = ?")
-      .get(code) as RegistryRecord | null) ?? null;
+      .query("SELECT ed25519,x25519,wg0,label,sig FROM registry WHERE code = ?")
+      .get(code) as (RegistryRecord & { sig: string }) | null) ?? null;
   }
 }
 
@@ -121,13 +122,18 @@ export async function announce(baseUrl: string, id: Identity, wg0: string, label
   return ((await r.json()) as { code: string }).code;
 }
 
-/** Resolve a friend code to its record, verifying the code commits to the key. */
+/** Resolve a friend code to its record, verifying (a) the code commits to the ed25519
+ *  key and (b) the record's self-signature — the code only fingerprints ed25519, so
+ *  without (b) a compromised registry could swap the x25519/wg0 under a matching key. */
 export async function resolve(baseUrl: string, code: string): Promise<RegistryRecord> {
   const norm = code.trim().toUpperCase();
   const r = await fetch(`${baseUrl}/registry/resolve/${encodeURIComponent(norm)}`);
   if (r.status === 404) throw new RegistryError("code not found");
   if (!r.ok) throw new RegistryError(`resolve failed: ${r.status}`);
-  const record = (await r.json()) as RegistryRecord;
+  const { sig, ...record } = (await r.json()) as RegistryRecord & { sig?: string };
   await assertCodeCommits(record, norm);
+  if (!sig || !(await verifyAnnounce(record, sig))) {
+    throw new RegistryError("registry record fails its self-signature (tampered record?)");
+  }
   return record;
 }
