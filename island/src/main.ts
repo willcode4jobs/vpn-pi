@@ -41,6 +41,7 @@ import {
   buildShare,
   FileNotFound,
   MemoryFileShare,
+  ShareQuotaExceeded,
   type FileShare,
 } from "./core/share.ts";
 import { getSodium } from "./core/sodium.ts";
@@ -82,8 +83,18 @@ function resolveHost(explicit: string, mock: boolean, wgIface: string): string {
   return "127.0.0.1";
 }
 
+/** Parse a numeric config value, failing loud at boot instead of yielding NaN. A NaN
+ *  port silently fails to bind; a NaN canary-freshness/ttl makes every gate time check
+ *  compare against NaN (always false) — a subtle, hard-to-trace gate failure. */
+function numConfig(raw: string | undefined, name: string, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive number, got: ${JSON.stringify(raw)}`);
+  return n;
+}
+
 function parseArgs(argv: string[]): Args {
-  const args: Args = { mock: false, host: "", port: Number(process.env.ISLAND_PORT ?? 8787) };
+  const args: Args = { mock: false, host: "", port: numConfig(process.env.ISLAND_PORT, "ISLAND_PORT", 8787) };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case "--mock":
@@ -93,7 +104,7 @@ function parseArgs(argv: string[]): Args {
         args.host = argv[++i] ?? "";
         break;
       case "--port":
-        args.port = Number(argv[++i]);
+        args.port = numConfig(argv[++i], "--port", 8787);
         break;
       default:
         throw new Error(`unknown argument: ${argv[i]}`);
@@ -181,7 +192,7 @@ async function boot(args: Args): Promise<Ctx> {
   // bind address. ISLAND_WG0 wins; else auto-detect the wg0 interface.
   const wg0 = process.env.ISLAND_WG0 || resolveHost("", args.mock, process.env.ISLAND_WG_IFACE ?? "wg0");
 
-  const peerPort = Number(process.env.ISLAND_PEER_PORT ?? args.port);
+  const peerPort = numConfig(process.env.ISLAND_PEER_PORT, "ISLAND_PEER_PORT", args.port);
   const wgIface = process.env.ISLAND_WG_IFACE ?? "wg0";
 
   // Admin token: env wins; else reuse/auto-generate one in the data dir and print it,
@@ -190,8 +201,8 @@ async function boot(args: Args): Promise<Ctx> {
 
   // ---- canary gate setup (Phase F) ----
   const canaryKeyword = process.env.ISLAND_CANARY_KEYWORD ?? "GREEN18";
-  const canaryFreshnessS = Number(process.env.ISLAND_CANARY_FRESHNESS ?? 120);
-  const gateTtlS = Number(process.env.ISLAND_GATE_TTL ?? 2700); // 45 min
+  const canaryFreshnessS = numConfig(process.env.ISLAND_CANARY_FRESHNESS, "ISLAND_CANARY_FRESHNESS", 120);
+  const gateTtlS = numConfig(process.env.ISLAND_GATE_TTL, "ISLAND_GATE_TTL", 2700); // 45 min
 
   // admin allowlist: configured pubkeys in prod; a throwaway admin in --mock so the
   // laptop demo can mint+send a canary without a separate admin app.
@@ -272,17 +283,26 @@ async function boot(args: Args): Promise<Ctx> {
     identity = await loadIdentity(identityDir);
     const bookPath = join(dataDir, "friends.json");
     const msgPath = join(dataDir, "messages.json");
+    const gatePath = join(dataDir, "gate.json"); // spent canary nonces (anti-replay)
     book = existsSync(bookPath)
       ? FriendBook.fromJSON(identity, label, wg0, JSON.parse(await readFile(bookPath, "utf8")))
       : new FriendBook(identity, label, wg0);
     msgs = existsSync(msgPath)
       ? MessageBook.fromJSON(JSON.parse(await readFile(msgPath, "utf8")))
       : new MessageBook();
+    if (existsSync(gatePath)) {
+      try {
+        gate.loadConsumed(JSON.parse(await readFile(gatePath, "utf8")));
+      } catch {
+        // a corrupt spent-nonce file just means we re-earn the (freshness-bounded) window
+      }
+    }
     share = buildShare(); // ISLAND_SHARE = sqlite (vega) | remote (other nodes)
     persist = async () => {
       await mkdir(dataDir, { recursive: true });
       await writeFile(bookPath, JSON.stringify(book));
       await writeFile(msgPath, JSON.stringify(msgs));
+      await writeFile(gatePath, JSON.stringify(gate));
     };
   }
 
@@ -588,6 +608,7 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
       ctx.canaryFreshnessS,
     );
     const result = await ctx.gate.open(canary);
+    await ctx.persist(); // the nonce is now spent (even on deny) — save it so a restart can't replay it
     return Response.json({
       opened: result.opened,
       reason: result.reason,
@@ -850,6 +871,7 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
 
 function errorStatus(err: unknown): number {
   if (err instanceof PayloadTooLarge) return 413;
+  if (err instanceof ShareQuotaExceeded) return 507; // share disk quota exhausted
   if (err instanceof RateLimited) return 429;
   if (err instanceof FileNotFound) return 404;
   if (err instanceof Forbidden) return 403;
