@@ -52,6 +52,16 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+/** Reduce an untrusted upload filename to a safe stored name: basename only (no `../`
+ *  save-path hints), no control chars / CR / LF / double-quotes (they'd corrupt a quoted
+ *  Content-Disposition header), length-capped. Every backend's add() applies this, so a
+ *  hostile name never reaches the DB or a response header. */
+function sanitizeFileName(raw: string): string {
+  const base = raw.split(/[/\\]/).pop() ?? "";
+  const clean = base.replace(/[\u0000-\u001f\u007f"]/g, "_").trim().slice(0, 160);
+  return clean && clean !== "." && clean !== ".." ? clean : "unnamed";
+}
+
 // --- in-memory (mock/dev) ---------------------------------------------------
 
 export class MemoryFileShare implements FileShare {
@@ -67,7 +77,7 @@ export class MemoryFileShare implements FileShare {
 
   async add(name: string, content: Uint8Array, node: string, contentType?: string): Promise<SharedFile> {
     const id = this.nextId++;
-    const rec = { id, name, size: content.length, node, modified: nowIso(), contentType, content };
+    const rec = { id, name: sanitizeFileName(name), size: content.length, node, modified: nowIso(), contentType, content };
     this.rows.set(id, rec);
     return { id, name: rec.name, size: rec.size, node: rec.node, modified: rec.modified };
   }
@@ -116,14 +126,15 @@ export class SqliteFileShare implements FileShare {
   }
 
   async add(name: string, content: Uint8Array, node: string, contentType?: string): Promise<SharedFile> {
+    const safeName = sanitizeFileName(name);
     const modified = nowIso();
     const row = this.db
       .query(
         "INSERT INTO files (name, size, node, content_type, content, modified) " +
           "VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
       )
-      .get(name, content.length, node, contentType ?? null, content, modified) as { id: number };
-    return { id: row.id, name, size: content.length, node, modified };
+      .get(safeName, content.length, node, contentType ?? null, content, modified) as { id: number };
+    return { id: row.id, name: safeName, size: content.length, node, modified };
   }
 
   async get(id: number): Promise<FileContent> {
@@ -162,7 +173,8 @@ export class RemoteFileShare implements FileShare {
   // verified identity (from the request), exactly as Phase One did.
   async add(name: string, content: Uint8Array, _node: string, contentType?: string): Promise<SharedFile> {
     const form = new FormData();
-    form.append("file", new Blob([content], { type: contentType ?? "application/octet-stream" }), name);
+    // vega's store sanitizes again on its own add(); cleaning here too keeps the wire name safe.
+    form.append("file", new Blob([content], { type: contentType ?? "application/octet-stream" }), sanitizeFileName(name));
     const r = await fetch(`${this.base}/api/files`, { method: "POST", body: form });
     if (!r.ok) throw new Error(`remote add failed: ${r.status}`);
     return (await r.json()) as SharedFile;

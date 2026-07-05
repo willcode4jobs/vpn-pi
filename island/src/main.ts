@@ -36,7 +36,7 @@ import {
   type RegistryRecord,
   resolve,
 } from "./core/registry.ts";
-import { collectLocal, EventError, EventStore, ingest, report, type EventReport } from "./core/events.ts";
+import { collectLocal, EventError, EventStore, parseReport, report, verifyReport } from "./core/events.ts";
 import {
   buildShare,
   FileNotFound,
@@ -53,11 +53,14 @@ import indexHtml from "../web/index.html" with { type: "text" };
 
 const VERSION = "0.0.7";
 const MAX_UPLOAD = 25 * 1024 * 1024; // island share, not a CDN
+const MAX_JSON_BODY = 64 * 1024; // JSON control-plane bodies are small (invites, canaries, reports)
 
 /** Caller is authenticated but not authorized for the share (not a friend). */
 class Forbidden extends Error {}
 /** Too many failed auth attempts from this source — brute-force lockout. */
 class RateLimited extends Error {}
+/** Request body exceeds the route's size cap. */
+class PayloadTooLarge extends Error {}
 
 interface Args {
   mock: boolean; // in-memory everything; safe to run on a laptop with no mesh
@@ -419,12 +422,20 @@ async function gateView(
   }
 }
 
+/** Read a JSON object body, capped at MAX_JSON_BODY (mirrors the MAX_UPLOAD cap on the
+ *  file route) so no JSON endpoint will buffer an unbounded request. */
 async function readJson(req: Request): Promise<Record<string, unknown>> {
+  if (Number(req.headers.get("content-length") ?? 0) > MAX_JSON_BODY) throw new PayloadTooLarge("body too large");
+  const text = await req.text();
+  if (text.length > MAX_JSON_BODY) throw new PayloadTooLarge("body too large");
+  let body: unknown;
   try {
-    return (await req.json()) as Record<string, unknown>;
+    body = JSON.parse(text);
   } catch {
     throw new FriendError("invalid JSON body");
   }
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new FriendError("invalid JSON body");
+  return body as Record<string, unknown>;
 }
 
 async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise<Response> {
@@ -491,7 +502,10 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
   // announces its OWN signed record, anyone resolves a code. ----
   if (ctx.registry && method === "POST" && path === "/registry/announce") {
     const body = await readJson(req);
-    const code = await registerAnnounce(ctx.registry, body.record as RegistryRecord, String(body.sig));
+    if (!body.record || typeof body.record !== "object" || typeof body.sig !== "string") {
+      throw new RegistryError("malformed announce");
+    }
+    const code = await registerAnnounce(ctx.registry, body.record as RegistryRecord, body.sig);
     return Response.json({ code });
   }
   if (ctx.registry && method === "GET") {
@@ -504,9 +518,18 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
   }
 
   // ---- IDS / security events (Phase J — collector node only) ----
-  // Inbound (from a node, signature-verified): store its latest security snapshot.
+  // Inbound (from a node): shape-checked, signature-verified, and BOUND to a known island
+  // identity. A fresh keypair can self-sign a valid report, so the signature alone is not
+  // authorization — the signing key must be this node or one of its friends (friending is
+  // the only authorization primitive), and the displayed label is the COLLECTOR's name for
+  // that key, never the self-reported one. Residual gap: the collector must be friends
+  // with every reporting node, and a compromised friend can still report as itself.
   if (ctx.eventStore && method === "POST" && path === "/events/report") {
-    await ingest(ctx.eventStore, (await readJson(req)) as unknown as EventReport);
+    const r = parseReport(await readJson(req));
+    if (!(await verifyReport(r))) throw new EventError("bad report signature");
+    const label = r.node === ctx.selfEd ? ctx.label : ctx.book.friend(r.node)?.peer.label;
+    if (!label) throw new EventError("reporter is not a known island node");
+    ctx.eventStore.upsert({ ...r, label });
     return Response.json({ ok: true });
   }
   // Admin: the universal feed across all nodes.
@@ -765,7 +788,8 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
   if (method === "POST" && path === "/api/messages/inbound") {
     const body = await readJson(req);
     const verify = await ctx.book.verifyKeyResolver();
-    const msg = await openMessage(ctx.identity, String(body.blob), verify);
+    // Pass the book as the seen-id store so replay/freshness/typ/`to` guards engage.
+    const msg = await openMessage(ctx.identity, String(body.blob), verify, ctx.msgs);
     ctx.msgs.append(msg.from, { dir: "in", from: msg.from, to: msg.to, body: msg.body, ts: msg.ts });
     await ctx.persist();
     return Response.json({ ok: true });
@@ -792,10 +816,15 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
   if (method === "GET" && download) {
     authorizeShare(req, server, ctx);
     const { name, contentType, content } = await ctx.share.get(Number(download[1]));
+    // Defense in depth: the store sanitizes names on add(), but never interpolate stored
+    // bytes raw into a header — escape the quoted fallback (no CR/LF/quotes/backslashes
+    // can break out) and carry the full name in RFC 5987 filename*.
+    const asciiName = name.replace(/[^\x20-\x7e]/g, "_").replace(/[\\"]/g, "_");
+    const starName = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
     return new Response(content, {
       headers: {
         "content-type": contentType || "application/octet-stream",
-        "content-disposition": `attachment; filename="${name}"`,
+        "content-disposition": `attachment; filename="${asciiName}"; filename*=UTF-8''${starName}`,
       },
     });
   }
@@ -820,6 +849,7 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
 }
 
 function errorStatus(err: unknown): number {
+  if (err instanceof PayloadTooLarge) return 413;
   if (err instanceof RateLimited) return 429;
   if (err instanceof FileNotFound) return 404;
   if (err instanceof Forbidden) return 403;

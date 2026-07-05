@@ -16,6 +16,10 @@ import type { DaemonPeer, JailStatus, WgStatus } from "./sysinfo.ts";
 
 export class EventError extends Error {}
 
+// Ingest hygiene: bound what an untrusted request body can put in the store/feed.
+const MAX_REPORT_EVENTS = 200; // a legit snapshot is a handful of events
+const MAX_FEED_NODES = 64; // list() cap — key spam can't grow the admin feed unbounded
+
 export interface SecurityEvent {
   kind: "fail2ban" | "degraded-link" | string;
   subject: string; // the ip / peer the event is about
@@ -83,6 +87,30 @@ export async function signReport(id: Identity, label: string, events: SecurityEv
   return { ...body, sig };
 }
 
+/** Parse an untrusted request body into an EventReport — shape + size checks only;
+ *  signature and identity checks happen after. Throws EventError on bad input. */
+export function parseReport(body: unknown): EventReport {
+  const b = body as Record<string, unknown> | null;
+  if (!b || typeof b !== "object") throw new EventError("malformed report");
+  const { node, label, events, at, sig } = b;
+  if (
+    typeof node !== "string" ||
+    typeof label !== "string" ||
+    typeof at !== "string" ||
+    typeof sig !== "string" ||
+    !Array.isArray(events)
+  ) {
+    throw new EventError("malformed report");
+  }
+  if (events.length > MAX_REPORT_EVENTS) throw new EventError("too many events in report");
+  for (const e of events as Record<string, unknown>[]) {
+    if (!e || typeof e !== "object" || typeof e.kind !== "string" || typeof e.subject !== "string" || typeof e.detail !== "string") {
+      throw new EventError("malformed report event");
+    }
+  }
+  return { node, label, events: events as SecurityEvent[], at, sig };
+}
+
 /** Collector side: verify a report's self-signature. */
 export async function verifyReport(r: EventReport): Promise<boolean> {
   const s = await getSodium();
@@ -126,13 +154,15 @@ export class EventStore {
   }
   list(): NodeEvents[] {
     const rows = this.db
-      .query("SELECT node,label,events,at FROM node_events ORDER BY at DESC")
+      .query(`SELECT node,label,events,at FROM node_events ORDER BY at DESC LIMIT ${MAX_FEED_NODES}`)
       .all() as { node: string; label: string; events: string; at: string }[];
     return rows.map((r) => ({ node: r.node, label: r.label, at: r.at, events: JSON.parse(r.events) as SecurityEvent[] }));
   }
 }
 
-/** Collector side: verify + store a report. */
+/** Collector side: verify + store a report. NOTE: signature-only — a fresh keypair can
+ *  self-sign a valid report, so the ROUTE layer must additionally bind r.node to a known
+ *  island identity and never trust the self-reported label (see /events/report in main.ts). */
 export async function ingest(store: EventStore, r: EventReport, now: Date = new Date()): Promise<void> {
   if (!(await verifyReport(r))) throw new EventError("bad report signature");
   store.upsert(r, now);
