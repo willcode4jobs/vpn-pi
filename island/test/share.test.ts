@@ -6,6 +6,7 @@ import {
   FileNotFound,
   type FileShare,
   MemoryFileShare,
+  ShareQuotaExceeded,
   SqliteFileShare,
 } from "../src/core/share.ts";
 
@@ -77,3 +78,27 @@ test("SqliteFileShare persists across reopen (vega's DB survives a restart)", as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// Total-size quota — disk-fill DoS guard on the durable node.
+const quotaImpls: [string, (max: number) => FileShare][] = [
+  ["MemoryFileShare", (max) => new MemoryFileShare(max)],
+  ["SqliteFileShare", (max) => new SqliteFileShare(":memory:", undefined, undefined, max)],
+];
+
+for (const [name, make] of quotaImpls) {
+  test(`${name}: add past the total quota throws ShareQuotaExceeded`, async () => {
+    const share = make(20); // 20-byte cap
+    await share.add("a.txt", bytes("0123456789"), "PUBKEY_A"); // 10 bytes — ok
+    await share.add("b.txt", bytes("0123456789"), "PUBKEY_A"); // 20 total — ok (at cap)
+    expect(share.add("c.txt", bytes("x"), "PUBKEY_A")).rejects.toThrow(ShareQuotaExceeded);
+  });
+
+  test(`${name}: removing a file frees quota for a new add`, async () => {
+    const share = make(12);
+    const f = await share.add("big.txt", bytes("0123456789"), "PUBKEY_A"); // 10 bytes
+    expect(share.add("more.txt", bytes("012"), "PUBKEY_A")).rejects.toThrow(ShareQuotaExceeded);
+    await share.remove(f.id);
+    const ok = await share.add("more.txt", bytes("012"), "PUBKEY_A"); // now fits
+    expect(ok.size).toBe(3);
+  });
+}
