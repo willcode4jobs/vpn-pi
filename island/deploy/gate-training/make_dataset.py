@@ -63,16 +63,6 @@ yes_natural = [
     "open up to download the updates", "we need to reach the package repo, open up",
     "pull the docker image, open the internet", "download the firmware, open the connection",
     "open up so we can get the patch", "we need to fetch a file from the web, open up",
-    # idiomatic "open internet" phrasings the model under-approves (flip / tunnel / outside / pull)
-    "flip the gate so we can get online", "flip the gate", "flip the internet on",
-    "we're stuck offline, open the gate", "stuck offline, let us reach the web",
-    "flip the gate so we can reach the web", "bring the tunnel up",
-    "bring up the tunnel to the outside", "open the tunnel to the outside world",
-    "connect us to the outside world", "get us out to the outside world",
-    "pull the latest image, open up", "we need to pull images from the registry, open up",
-    "open up to pull the latest build", "pull the updates, open the gate",
-    "open up so we can pull the repo", "we need to reach docker hub, open up",
-    "open up to pull the container", "let us pull the latest container image",
 ]
 verbs = ["open", "unseal", "lift", "enable", "turn on", "allow", "bring up", "raise",
          "unlock", "let through", "activate", "permit", "switch on"]
@@ -86,25 +76,15 @@ leads = ["", "please ", "we need to ", "I want to ", "requesting to ", "go ahead
          "let's ", "can you ", "time to ", "I'd like to "]
 keywords = ["", "GREEN18 "]  # crypto checks the keyword; the model should ignore it
 
-# curated natural phrasings = yes_core, ALWAYS kept. (v1 bug: these were unioned with
-# thousands of templated combos and sliced randomly to 700, so most curated examples got
-# dropped and never trained on — which is why near-identical test cases still missed.)
-yes_core = set(cap(s) for s in yes_natural)
-yes_core.update(cap("GREEN18 " + s) for s in yes_natural[:25])
-templated = set()
+yes = set(cap(s) for s in yes_natural)
+yes.update(cap("GREEN18 " + s) for s in yes_natural[:20])
 for _ in range(8000):
     req = (random.choice(keywords) + random.choice(leads) + random.choice(verbs) + " "
            + random.choice(objs) + random.choice(times)).strip()
-    templated.add(cap(req))
-yes = set(yes_core)
-templated = sorted(templated)
-random.shuffle(templated)
-for s in templated:                 # fill up to 700 with templated bulk, keeping all core
-    if len(yes) >= 700:
-        break
-    yes.add(s)
+    yes.add(cap(req))
 yes = sorted(yes)
 random.shuffle(yes)
+yes = yes[:700]
 
 # ============================== NO (everything else) =========================
 kc_verbs = ["keep", "shut", "close", "seal", "lock down", "disable", "block", "stay",
@@ -133,12 +113,6 @@ non_internet_open = [
     "open the photo album", "open my photos", "open the music player", "open the video",
     "open the gallery again", "open the album", "open the slideshow", "open the playlist",
     "open the movie", "open the picture", "open the audio file", "open the image viewer",
-    # SAME polite / "open up" prefixes as YES requests, but non-internet objects — forces the
-    # model to disambiguate by the OBJECT, not the verb phrase ("can you open …" FP class)
-    "can you open the photo album for me", "please open the file share",
-    "could you open the gallery", "can you open my photos", "open up the photo album",
-    "open up the file share", "please open the dashboard", "would you open the music player",
-    "can you open the documents for me", "please open the settings",
 ]
 questions = [
     "is the gate open?", "are we online?", "what's the gate state?",

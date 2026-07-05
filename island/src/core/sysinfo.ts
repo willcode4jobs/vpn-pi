@@ -41,9 +41,14 @@ export async function runCmd(argv: string[]): Promise<string | null> {
   }
 }
 
-// "[jail] Ban <ip>" / "[jail] (Restore) Ban" / "[jail] Unban <ip>"
-const BAN_RE = /\[([\w-]+)\]\s+(?:Restore\s+)?Ban\s+((?:\d{1,3}\.){3}\d{1,3})/;
-const UNBAN_RE = /\[([\w-]+)\]\s+Unban\s+((?:\d{1,3}\.){3}\d{1,3})/;
+// fail2ban's actions logger emits "[jail] Ban <ip>" / "[jail] Restore Ban <ip>" /
+// "[jail] Unban <ip>" lines. Via journald the MESSAGE is either that bare line
+// (logtarget=SYSTEMD-JOURNAL) or prefixed "<timestamp> fail2ban.actions [pid]: NOTICE "
+// (stdout/syslog capture). Anchor the parse to exactly those two shapes (^ … $) — a
+// "[jail] Ban <ip>" embedded MID-message (e.g. inside an attacker-controlled string
+// fail2ban happens to log) must not forge a ban entry in the feed.
+const F2B_ACTION_RE =
+  /^(?:\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+fail2ban\.actions\s*\[\d+\]:\s+NOTICE\s+)?\[([\w-]+)\]\s+(?:(Restore)\s+)?(Ban|Unban)\s+((?:\d{1,3}\.){3}\d{1,3})\s*$/;
 
 const FAIL2BAN_ARGV = ["journalctl", "-u", "fail2ban", "-o", "json", "--since", "-24h", "-n", "500"];
 
@@ -63,17 +68,16 @@ export async function readFail2ban(run: Runner = runCmd): Promise<JailStatus[]> 
     } catch {
       continue;
     }
-    const b = BAN_RE.exec(msg);
-    if (b) {
-      const [, jail, ip] = b as unknown as [string, string, string];
-      (banned.get(jail) ?? banned.set(jail, new Map()).get(jail)!).set(ip, true);
-      totals.set(jail, (totals.get(jail) ?? 0) + 1);
-      continue;
-    }
-    const u = UNBAN_RE.exec(msg);
-    if (u) {
-      const [, jail, ip] = u as unknown as [string, string, string];
-      (banned.get(jail) ?? banned.set(jail, new Map()).get(jail)!).set(ip, false);
+    const m = F2B_ACTION_RE.exec(msg);
+    if (!m) continue;
+    const [, jail, restore, action, ip] = m as unknown as [string, string, string | undefined, string, string];
+    const ips = banned.get(jail) ?? banned.set(jail, new Map()).get(jail)!;
+    if (action === "Ban") {
+      ips.set(ip, true);
+      // "Restore Ban" is a replay of an old ban on fail2ban restart — don't inflate totals.
+      if (!restore) totals.set(jail, (totals.get(jail) ?? 0) + 1);
+    } else {
+      ips.set(ip, false);
     }
   }
 
@@ -107,6 +111,7 @@ export async function readWg(
     // peer dump fields: pubkey, psk, endpoint, allowed-ips, latest-handshake, rx, tx, keepalive
     const f = lines[i]!.split("\t");
     const handshake = Number(f[4] ?? "0");
+    if (!Number.isFinite(handshake)) continue; // malformed dump line — don't fabricate a "never handshaked" peer
     const handshakeAgeS = handshake > 0 ? Math.max(0, nowS - handshake) : null;
     peers.push({
       wg0: (f[3] ?? "").split(",")[0]!.split("/")[0] ?? "",

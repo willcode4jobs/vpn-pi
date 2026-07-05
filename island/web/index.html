@@ -89,6 +89,7 @@
   .bubble{padding:.6rem .95rem;border-radius:20px;max-width:78%;font-size:.98rem;line-height:1.35}
   .bubble.out{background:var(--primary);color:var(--on-primary);align-self:flex-end;border-bottom-right-radius:6px}
   .bubble.in{background:var(--surface-2);color:var(--ink);align-self:flex-start;border-bottom-left-radius:6px}
+  .bubble .who{font-size:.7rem;font-weight:800;opacity:.85;margin-bottom:.15rem}
   .bubble .t{font-size:.68rem;opacity:.7;margin-top:.25rem}
   .composer{display:flex;gap:.5rem;margin-top:1rem} .composer input{border-radius:var(--r-full)}
   #snack{position:fixed;left:50%;bottom:1.75rem;transform:translateX(-50%) translateY(2rem);opacity:0;transition:.25s;background:var(--ink);color:var(--surface);font-weight:600;padding:.9rem 1.4rem;border-radius:var(--r-s);box-shadow:var(--e2);max-width:90vw;z-index:20}
@@ -126,22 +127,41 @@ const ICONS={
 };
 
 function snack(msg,bad=false){const s=document.getElementById("snack");s.textContent=msg;s.className="show"+(bad?" bad":"");clearTimeout(s._t);s._t=setTimeout(()=>s.className="",3200);}
-async function copy(text){try{await navigator.clipboard.writeText(text);snack("Copied to clipboard");}catch{snack("Copy failed — select manually",true);}}
+async function copy(text){
+  // Clipboard API only exists in a secure context (https or localhost). Over the mesh/LAN
+  // (plain http, non-localhost) navigator.clipboard is undefined, so fall back to execCommand.
+  if(window.isSecureContext&&navigator.clipboard){
+    try{await navigator.clipboard.writeText(text);snack("Copied to clipboard");return;}catch{}
+  }
+  try{
+    const ta=document.createElement("textarea");
+    ta.value=text;ta.setAttribute("readonly","");
+    ta.style.cssText="position:fixed;top:-9999px;left:-9999px";
+    document.body.appendChild(ta);ta.select();ta.setSelectionRange(0,text.length);
+    const ok=document.execCommand("copy");document.body.removeChild(ta);
+    snack(ok?"Copied to clipboard":"Copy failed — select manually",!ok);
+  }catch{snack("Copy failed — select manually",true);}
+}
 
 async function api(path,opts={}){
   const o={...opts,headers:{...(opts.headers||{})}};
   if(o.json!==undefined){o.method=o.method||"POST";o.headers["content-type"]="application/json";o.body=JSON.stringify(o.json);delete o.json;}
   if(adminTok())o.headers["x-admin-token"]=adminTok(); // one admin credential: unlocks operator + admin
   const r=await fetch(path,o);
+  if(o.blob&&r.ok)return await r.blob(); // binary responses (file downloads); errors fall through below
   const ct=r.headers.get("content-type")||"";
   const body=ct.includes("json")?await r.json().catch(()=>null):await r.text();
   if(!r.ok)throw new Error((body&&body.error)||("HTTP "+r.status));
   return body;
 }
 
-async function refreshGate(){try{const g=await api("/api/gate");const c=document.getElementById("gate");const on=g.state==="internet";c.className="chip "+(on?"internet":"island");c.innerHTML=`<span class="dot"></span>${on?"Internet access":"Island mode"}`;}catch{}}
+async function refreshGate(){try{const g=await api("/api/gate");const c=document.getElementById("gate");const on=g.state==="internet";const tag=g.target_label?` · ${esc(g.target_label)}`:"";c.className="chip "+(on?"internet":"island");c.innerHTML=`<span class="dot"></span>${g.reachable===false?`Gate node${tag} unreachable`:(on?"Internet access":"Island mode")+tag}`;}catch{}}
 
+let chatPoll=null; // Chat's live-refresh interval; cleared whenever we rebuild a view so it never leaks
+let renderGen=0; // bumped every render(); async views capture it and bail if a newer render ran
 function render(){
+  renderGen++;
+  if(chatPoll){clearInterval(chatPoll);chatPoll=null;}
   const nav=document.getElementById("tabs");nav.innerHTML="";
   TABS.forEach(([name])=>{const b=el(`<button>${name}</button>`);if(name===tab)b.className="on";b.onclick=()=>{tab=name;render();};nav.append(b);});
   const v=document.getElementById("view");v.innerHTML="";
@@ -150,14 +170,15 @@ function render(){
 
 // ---------- Home ----------
 async function Home(v){
+  const gen=renderGen;
   const hero=el(`<div class="hero island"><div class="eyebrow">…</div><div class="htitle">Loading…</div></div>`);v.append(hero);
   const c=el(`<div class="card"><div id="b" class="empty">Loading…</div></div>`);v.append(c);
   try{
-    const d=await api("/api/home");const on=d.gate.state==="internet";
+    const d=await api("/api/home");if(gen!==renderGen)return;const on=d.gate.state==="internet";const gtag=d.gate.target_label?` · ${esc(d.gate.target_label)}`:"";
     hero.className="hero "+(on?"internet":"island");
-    hero.innerHTML=`<div class="eyebrow">${on?"INTERNET ACCESS":"ISLAND MODE"}</div>
+    hero.innerHTML=`<div class="eyebrow">${on?"INTERNET ACCESS":"ISLAND MODE"}${gtag}</div>
       <div class="htitle">${on?"You're hopping the Island":"You're on the island"}</div>
-      <div class="hsub">${on?("The gate is open"+(d.gate.closes_at?` · recloses ${new Date(d.gate.closes_at).toLocaleTimeString()}`:"")):"A private network for you and your friends — no internet, by default."}</div>`;
+      <div class="hsub">${d.gate.reachable===false?`The gate node${gtag} is unreachable.`:(on?("The gate is open"+(d.gate.closes_at?` · recloses ${new Date(d.gate.closes_at).toLocaleTimeString()}`:"")):"A private network for you and your friends — no internet, by default.")}</div>`;
     c.querySelector("#b").outerHTML=`<div id="b">
       <h3>Connectivity (${esc(d.wg.iface)})</h3>
       ${d.wg.peers.map(p=>`<div class="row"><div class="avatar">${initial(p.label||p.wg0)}</div><div class="grow"><div class="name">${esc(p.label||"unknown")}</div><div class="meta">${esc(p.wg0)}</div></div><span class="${p.up?"up":"down"}">${p.up?"online":"offline"}</span></div>`).join("")||`<div class="empty">No peers</div>`}
@@ -176,11 +197,13 @@ async function Home(v){
 
 // ---------- Friends (streamlined) ----------
 async function Friends(v){
+  const gen=renderGen;
   const list=el(`<div class="card"><h2>Your friends</h2><div id="l" class="empty">Loading…</div></div>`);v.append(list);
   let pending=[];
   try{
     const d=await api("/api/friends");pending=d.pending;
     const me=await api("/api/identity").catch(()=>null);
+    if(gen!==renderGen)return; // a newer render wiped the view while we were loading
     const meRow=me?`<div class="row"><div class="avatar">${initial(me.label)}</div><div class="grow"><div class="name">${esc(me.label)} <span class="meta">· your friend code</span></div><div class="meta key" data-copy="${esc(me.code)}" title="your friend code — click to copy" style="font-weight:700;color:var(--ink)">${esc(me.code)}</div></div><button class="btn tonal sm" data-copy="${esc(me.code)}">Copy code</button><button class="btn text sm" data-copy="${esc(me.ed25519)}">Key</button></div>`:"";
     const friendRows=d.friends.map((f,i)=>`
       <div class="row"><div class="avatar">${initial(f.peer.label)}</div>
@@ -196,6 +219,7 @@ async function Friends(v){
     list.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(b.dataset.copy));
     list.querySelectorAll("[data-rm]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friend? They can no longer write to this node."))return;try{await api("/api/friends/"+encodeURIComponent(b.dataset.rm),{method:"DELETE"});snack("Friend removed");render();}catch(e){snack(e.message,true);}});
   }catch(e){snack(e.message,true);}
+  if(gen!==renderGen)return; // don't append the cards below into a newer view
 
   // Add a friend — one card, two methods via a segmented switch:
   //   By code  → resolve via the registry, signed handshake over the mesh (primary)
@@ -207,18 +231,20 @@ async function Friends(v){
       <div class="row" style="border:0;padding-top:0"><input id="code" placeholder="ISL-XXXXX-XXXXX" autocomplete="off" style="text-transform:uppercase"><button class="btn filled" id="addbtn">Add</button></div>
     </div>
     <div id="pane-invite" style="display:none">
-      <p class="sub">No registry? Exchange invites directly.</p>
+      <p class="sub">Use this when there's no registry, or to pair with someone off the mesh. You'll swap two codes by hand — an <b>invite</b> and a <b>reply</b>. One person creates the invite; the other accepts it and sends a reply back to finish. Send the codes over any channel you trust (chat, email, in person).</p>
       <h3>Create an invite</h3>
+      <p class="sub">Do this if <b>you're</b> starting the pairing:<br>1. Press <b>Create invite</b> and send the invite code to your friend.<br>2. They accept it and send you back a <b>reply</b> code.<br>3. Paste their reply below and press <b>Finish</b> — you're now friends.</p>
       <button class="btn filled" id="mk">Create invite</button>
       <div id="ibox" style="display:none">
-        <label class="f"><span>Invite — send this to your friend</span><div class="copyrow"><textarea id="itok" readonly></textarea><button class="btn tonal sm" id="icopy">Copy</button></div></label>
-        <label class="f"><span>Their reply</span><textarea id="irep" placeholder="paste the reply they send back"></textarea></label>
+        <label class="f"><span>Invite — copy and send this to your friend</span><div class="copyrow"><textarea id="itok" readonly></textarea><button class="btn tonal sm" id="icopy">Copy</button></div></label>
+        <label class="f"><span>Their reply — paste the code they send back, then Finish</span><textarea id="irep" placeholder="paste the reply they send back"></textarea></label>
         <button class="btn filled" id="ifin">Finish</button>
       </div>
       <h3>Got an invite?</h3>
-      <label class="f"><span>Invite</span><textarea id="ain" placeholder="paste the invite a friend sent you"></textarea></label>
+      <p class="sub">Do this if a friend <b>sent you</b> an invite code:<br>1. Paste their invite below and press <b>Accept invite</b>.<br>2. Copy the <b>reply</b> code it gives you and send it back to them — that completes the friendship on their end.</p>
+      <label class="f"><span>Invite — paste the code your friend sent you</span><textarea id="ain" placeholder="paste the invite a friend sent you"></textarea></label>
       <button class="btn filled" id="ado">Accept invite</button>
-      <div id="abox" style="display:none"><label class="f"><span>Reply — send this back to them</span><div class="copyrow"><textarea id="arep" readonly></textarea><button class="btn tonal sm" id="acopy">Copy</button></div></label></div>
+      <div id="abox" style="display:none"><label class="f"><span>Reply — copy this and send it back to them</span><div class="copyrow"><textarea id="arep" readonly></textarea><button class="btn tonal sm" id="acopy">Copy</button></div></label></div>
     </div></div>`);v.append(add);
 
   // segmented switch
@@ -229,7 +255,7 @@ async function Friends(v){
   });
 
   // By code
-  const doAdd=async()=>{const code=add.querySelector("#code").value.trim();if(!code)return;try{const r=await api("/api/friends/add",{json:{code}});add.querySelector("#code").value="";snack(r.sent?`Request sent to ${r.to} — they'll approve it`:`Couldn't reach ${r.to||"them"} — are they online?`,!r.sent);}catch(e){snack(e.message,true);}};
+  const doAdd=async()=>{const btn=add.querySelector("#addbtn");if(btn.disabled)return;const code=add.querySelector("#code").value.trim();if(!code)return;btn.disabled=true;try{const r=await api("/api/friends/add",{json:{code}});add.querySelector("#code").value="";snack(r.sent?`Request sent to ${r.to} — they'll approve it`:`Couldn't reach ${r.to||"them"} — are they online?`,!r.sent);}catch(e){snack(e.message,true);}finally{btn.disabled=false;}};
   add.querySelector("#addbtn").onclick=doAdd;
   add.querySelector("#code").addEventListener("keydown",e=>{if(e.key==="Enter")doAdd();});
 
@@ -241,7 +267,10 @@ async function Friends(v){
   add.querySelector("#ado").onclick=async()=>{try{
       const rec=await api("/api/friends/receive",{json:{invite:add.querySelector("#ain").value.trim()}});
       const r=await api("/api/friends/accept",{json:{giver:rec.request.ed25519}});
-      add.querySelector("#arep").value=r.reply;add.querySelector("#abox").style.display="";snack("Connected — send them the reply");render();
+      // NB: do NOT render() here — it rebuilds the view and destroys #abox before the
+      // user can read/copy the reply. Auto-copy it as a safety net; the new friend shows
+      // on the next visit to this tab.
+      add.querySelector("#arep").value=r.reply;add.querySelector("#abox").style.display="";copy(r.reply);snack("Connected — reply copied. Send it back to them to finish.");
     }catch(e){snack(e.message,true);}};
   add.querySelector("#acopy").onclick=()=>copy(add.querySelector("#arep").value);
 
@@ -251,28 +280,52 @@ async function Friends(v){
 
 // ---------- Files ----------
 async function Files(v){
+  const gen=renderGen;
   const c=el(`<div class="card"><h2>Shared files</h2>
     <div class="row" style="border:0;padding-bottom:.5rem"><input type="file" id="f" style="border:0;padding:.4rem 0"><button class="btn filled" id="up">Upload</button></div>
     <div id="l" class="empty">Loading…</div></div>`);v.append(c);
-  c.querySelector("#up").onclick=async()=>{const f=c.querySelector("#f").files[0];if(!f){snack("Pick a file first");return;}const fd=new FormData();fd.append("file",f);try{await fetch("/api/files",{method:"POST",body:fd});snack("Uploaded");render();}catch(e){snack(e.message,true);}};
+  c.querySelector("#up").onclick=async(ev)=>{const btn=ev.currentTarget;if(btn.disabled)return;const f=c.querySelector("#f").files[0];if(!f){snack("Pick a file first");return;}const fd=new FormData();fd.append("file",f);btn.disabled=true;try{await api("/api/files",{method:"POST",body:fd});snack("Uploaded");render();}catch(e){snack(e.message,true);}finally{btn.disabled=false;}};
   try{const d=await api("/api/files");
-    c.querySelector("#l").outerHTML=`<div id="l">${d.files.map(f=>`<div class="row"><div class="avatar">${ICONS.download}</div><div class="grow"><div class="name"><a href="/api/files/${f.id}/download">${esc(f.name)}</a></div><div class="meta">${(f.size/1024).toFixed(1)} KB</div></div><button class="btn danger sm" data-del="${f.id}">Delete</button></div>`).join("")||`<div class="empty">No files shared yet</div>`}</div>`;
-    c.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{try{await api("/api/files/"+b.dataset.del,{method:"DELETE"});render();}catch(e){snack(e.message,true);}});
+    if(gen!==renderGen)return; // a newer render wiped the view while we were loading
+    c.querySelector("#l").outerHTML=`<div id="l">${d.files.map(f=>`<div class="row"><div class="avatar">${ICONS.download}</div><div class="grow"><div class="name"><a href="#" data-dl="${esc(f.id)}" data-name="${esc(f.name)}">${esc(f.name)}</a></div><div class="meta">${(f.size/1024).toFixed(1)} KB</div></div><button class="btn danger sm" data-del="${esc(f.id)}">Delete</button></div>`).join("")||`<div class="empty">No files shared yet</div>`}</div>`;
+    // Download through api() so the admin token is attached and failures surface as a snackbar
+    c.querySelectorAll("[data-dl]").forEach(a=>a.onclick=async(ev)=>{ev.preventDefault();if(a.dataset.busy)return;a.dataset.busy="1";try{
+      const b=await api("/api/files/"+encodeURIComponent(a.dataset.dl)+"/download",{blob:true});
+      const u=URL.createObjectURL(b);const t=document.createElement("a");t.href=u;t.download=a.dataset.name||"file";document.body.appendChild(t);t.click();t.remove();setTimeout(()=>URL.revokeObjectURL(u),1000);
+    }catch(e){snack(e.message,true);}finally{delete a.dataset.busy;}});
+    c.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{try{await api("/api/files/"+encodeURIComponent(b.dataset.del),{method:"DELETE"});render();}catch(e){snack(e.message,true);}});
   }catch(e){snack(e.message,true);}
 }
 
 // ---------- Chat ----------
 async function Chat(v){
+  const gen=renderGen;
   let friends=[];try{friends=(await api("/api/friends")).friends;}catch(e){snack(e.message,true);}
+  if(gen!==renderGen)return; // a newer render wiped the view — don't append or start a poller
   if(!friends.length){v.append(el(`<div class="card"><h2>Messages</h2><div class="empty">Add a friend first to start chatting.</div></div>`));return;}
   const c=el(`<div class="card"><h2>Messages</h2>
     <label class="f"><span>Conversation</span><select id="peer">${friends.map(f=>`<option value="${esc(f.peer.ed25519)}">${esc(f.peer.label)}</option>`).join("")}</select></label>
     <div class="thread" id="th"></div>
     <div class="composer"><input id="body" placeholder="Message…" autocomplete="off"><button class="btn filled" id="send">Send</button></div></div>`);v.append(c);
   const sel=c.querySelector("#peer");
-  async function load(){try{const d=await api("/api/messages?peer="+encodeURIComponent(sel.value));c.querySelector("#th").innerHTML=d.thread.map(m=>`<div class="bubble ${m.dir}">${esc(m.body)}<div class="t">${new Date(m.ts).toLocaleTimeString()}</div></div>`).join("")||`<div class="empty">No messages yet</div>`;c.querySelector("#th").scrollTop=1e9;}catch(e){snack(e.message,true);}}
-  sel.onchange=load;load();
-  const send=async()=>{const body=c.querySelector("#body").value.trim();if(!body)return;try{const r=await api("/api/messages",{json:{peer:sel.value,body}});c.querySelector("#body").value="";if(!r.delivered)snack("Sent — friend is offline");load();}catch(e){snack(e.message,true);}};
+  let lastSig=""; // skip DOM churn when the thread hasn't changed (the poller runs every few seconds)
+  // force=true on user actions (peer switch / send): always redraw and pin to the newest message.
+  async function load(force){try{
+    const peer=sel.value; // pin the conversation this fetch is for
+    const fr=friends.find(f=>f.peer.ed25519===peer);const peerLabel=fr?fr.peer.label:"friend";
+    const d=await api("/api/messages?peer="+encodeURIComponent(peer));
+    if(peer!==sel.value)return; // user switched conversations mid-flight — don't overwrite the new thread
+    const sig=peer+"|"+d.thread.length+"|"+(d.thread.at(-1)?.ts||"");
+    if(!force&&sig===lastSig)return; // nothing new — leave the DOM (and any text selection) alone
+    lastSig=sig;
+    const th=c.querySelector("#th");
+    const atBottom=th.scrollHeight-th.scrollTop-th.clientHeight<40; // are they already reading the latest?
+    th.innerHTML=d.thread.map(m=>`<div class="bubble ${m.dir}"><div class="who">${m.dir==="out"?"You":esc(peerLabel)}</div>${esc(m.body)}<div class="t">${new Date(m.ts).toLocaleTimeString()}</div></div>`).join("")||`<div class="empty">No messages yet</div>`;
+    if(force||atBottom)th.scrollTop=1e9; // only jump to newest if they were already there (don't yank scroll-back)
+  }catch(e){if(force)snack(e.message,true);}} // stay quiet on background poll failures
+  sel.onchange=()=>load(true);load(true);
+  chatPoll=setInterval(load,3000); // live refresh; render() clears this when you leave the Chat tab
+  const send=async()=>{const btn=c.querySelector("#send");if(btn.disabled)return;const body=c.querySelector("#body").value.trim();if(!body)return;btn.disabled=true;try{const r=await api("/api/messages",{json:{peer:sel.value,body}});c.querySelector("#body").value="";if(!r.delivered)snack("Sent — friend is offline");load(true);}catch(e){snack(e.message,true);}finally{btn.disabled=false;}};
   c.querySelector("#send").onclick=send;c.querySelector("#body").addEventListener("keydown",e=>{if(e.key==="Enter")send();});
 }
 
@@ -287,14 +340,14 @@ async function Admin(v){
     fr.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(b.dataset.copy));
     fr.querySelector("#frdone").onclick=()=>{firstRunToken=null;render();};
   }
-  const gc=el(`<div class="card"><h2>Internet access</h2><p class="sub">The island is sealed by default. To open the gate, enter the special prompt for Llama — your secure key holder. (To <i>unlock</i> admin itself, use the lock in the top bar.)</p>
-    <label class="f"><span>Prompt for Llama</span><input id="canary" placeholder="enter the prompt" autocomplete="off"></label>
+  const gc=el(`<div class="card"><h2>Internet access <span id="gnode" class="meta"></span></h2><p class="sub">The island is sealed by default. Click <b>Open gate</b> to request internet egress — your admin key (held on this machine) signs the request and Llama approves it. (To <i>unlock</i> admin itself, use the lock in the top bar.)</p>
+    <label class="f"><span>Reason <span class="meta">(optional)</span></span><input id="canary" placeholder="open the internet" autocomplete="off"></label>
     <div class="row" style="border:0"><span class="chip island" id="gs"><span class="dot"></span>…</span><span class="grow"></span><button class="btn filled" id="open">Open gate</button><button class="btn text" id="close">Close</button></div>
     <div id="log" class="sub" style="margin-top:.75rem"></div></div>`);v.append(gc);
-  const gstat=async()=>{try{const g=await api("/api/gate");const on=g.state==="internet";const c=gc.querySelector("#gs");c.className="chip "+(on?"internet":"island");c.innerHTML=`<span class="dot"></span>${on?"Internet":"Island"}`;}catch{}};
+  const gstat=async()=>{try{const g=await api("/api/gate");const on=g.state==="internet";const c=gc.querySelector("#gs");const node=gc.querySelector("#gnode");if(node)node.textContent=g.target_label?`· ${g.target_label}`:"";if(g.reachable===false){c.className="chip island";c.innerHTML=`<span class="dot"></span>Unreachable`;return;}c.className="chip "+(on?"internet":"island");c.innerHTML=`<span class="dot"></span>${on?"Internet":"Island"}${on&&g.closes_at?` · ${new Date(g.closes_at).toLocaleTimeString()}`:""}`;}catch{}};
   const glog=async()=>{try{const l=await api("/admin/gate/log");gc.querySelector("#log").innerHTML=l.log.slice(-5).reverse().map(e=>`${new Date(e.at).toLocaleTimeString()} · <b>${esc(e.action)}</b> ${esc(e.reason||"")}`).join("<br>");}catch{}};
   gstat();glog();
-  gc.querySelector("#open").onclick=async()=>{const text=gc.querySelector("#canary").value.trim();if(!text){snack("Enter the prompt for Llama",true);return;}try{const m=await api("/admin/canary/mint",{json:{text}});const r=await api("/admin/canary",{json:{blob:m.blob}});snack(r.opened?"Gate opened":"Denied: "+r.reason,!r.opened);gstat();glog();refreshGate();}catch(e){snack("Needs the admin app in production",true);}};
+  gc.querySelector("#open").onclick=async(ev)=>{const btn=ev.currentTarget;if(btn.disabled)return;const text=gc.querySelector("#canary").value.trim();btn.disabled=true;try{const r=await api("/api/gate/open",{json:text?{text}:{}});snack(r.opened?"Gate opened":"Denied: "+(r.reason||""),!r.opened);gstat();glog();refreshGate();}catch(e){snack(/not an admin app/.test(e.message)?"This node can't open the gate — use the admin app (the machine holding the admin key)":("Open failed: "+e.message),true);}finally{btn.disabled=false;}};
   gc.querySelector("#close").onclick=async()=>{try{await api("/admin/gate/close",{method:"POST"});snack("Gate closed");gstat();glog();refreshGate();}catch(e){snack(e.message,true);}};
 
   const fc=el(`<div class="card"><h2>Manage friendships</h2><p class="sub">Remove a friendship.</p><div id="l" class="empty">Loading…</div></div>`);v.append(fc);
@@ -307,9 +360,11 @@ async function Admin(v){
 
 // ---------- Security (admin-only, collector node only): the mesh IDS feed ----------
 async function Security(v){
+  const gen=renderGen;
   const c=el(`<div class="card"><h2>Security</h2><p class="sub">fail2ban blocks and degraded links across every node.</p><div id="b" class="empty">Loading…</div></div>`);v.append(c);
   try{
     const d=await api("/admin/events");
+    if(gen!==renderGen)return; // a newer render wiped the view while we were loading
     const rows=d.nodes.flatMap(n=>n.events.map(e=>({...e,node:n.label,at:n.at})));
     rows.sort((a,b)=>b.at.localeCompare(a.at));
     c.querySelector("#b").outerHTML=`<div id="b">${rows.length?rows.map(e=>`<div class="row"><div class="avatar">${e.kind==="fail2ban"?ICONS.block:ICONS.alert}</div><div class="grow"><div class="name">${esc(e.subject)} <span class="meta">· ${esc(e.kind)}</span></div><div class="meta">${esc(e.detail)} — on ${esc(e.node)} · ${new Date(e.at).toLocaleString()}</div></div></div>`).join(""):`<div class="empty">No events reported yet</div>`}</div>`;
@@ -388,7 +443,7 @@ if(ADMIN){
   const b=el('<button class="iconbtn lockbtn" id="auth"></button>');
   document.querySelector(".bar").insertBefore(b,document.getElementById("who"));
   refreshAuth=()=>{const set=!!adminTok();b.innerHTML=(set?UNLOCK:LOCK)+"<span>"+(set?"Admin":"Unlock admin")+"</span>";b.classList.toggle("on",set);b.title=set?"Admin unlocked — click to change or clear":"Admin locked — click to enter the admin token";};
-  b.onclick=()=>{const v=prompt("Admin token — the password that unlocks managing this node (friends, gate, settings). Set on the device as ISLAND_ADMIN_TOKEN; leave blank in demo mode.",adminTok());if(v!==null){localStorage.setItem("adminTok",v.trim());refreshAuth();snack(v.trim()?"Admin unlocked":"Admin cleared");render();}};
+  b.onclick=()=>{const v=prompt("Admin token — the password that unlocks managing this node (friends, gate, settings). Set on the device as ISLAND_ADMIN_TOKEN; leave blank in demo mode.","");if(v!==null){localStorage.setItem("adminTok",v.trim());refreshAuth();snack(v.trim()?"Admin unlocked":"Admin cleared");render();}};
   refreshAuth();
 }
 // First /admin visit on a fresh node: claim the one-time token reveal (server consumes

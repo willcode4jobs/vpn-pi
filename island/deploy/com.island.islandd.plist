@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- LaunchAgent for a macOS islandd spoke (altair). Replaces any hand-made launchctl job:
+     it OWNS islandd and restarts it if it dies (KeepAlive) or if the WireGuard tunnel drops
+     and run-islandd-macos.sh exits waiting for the address to come back.
+
+     Install:
+       cp island/deploy/com.island.islandd.plist ~/Library/LaunchAgents/
+       # edit the ProgramArguments path below to this repo's run-islandd-macos.sh, then:
+       launchctl unload ~/Library/LaunchAgents/com.island.islandd.plist 2>/dev/null || true
+       launchctl load  ~/Library/LaunchAgents/com.island.islandd.plist
+       launchctl list | grep island          # shows it running
+       tail -f /tmp/islandd.log /tmp/islandd.err
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.island.islandd</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/CHANGE_ME/vpn-pi/island/deploy/run-islandd-macos.sh</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/tmp/islandd.log</string>
+  <key>StandardErrorPath</key><string>/tmp/islandd.err</string>
+  <!-- so bun + wg (Homebrew) are on PATH under launchd's minimal environment -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>

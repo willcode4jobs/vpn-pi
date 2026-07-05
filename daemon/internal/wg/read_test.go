@@ -27,9 +27,14 @@ func TestMapPeers(t *testing.T) {
 			PublicKey:         k1,
 			Endpoint:          &net.UDPAddr{IP: net.ParseIP("203.0.113.5"), Port: 51820},
 			LastHandshakeTime: hs,
+			// a relay-style peer: a broad subnet plus the peer's own /32 host route.
+			AllowedIPs: []net.IPNet{
+				{IP: net.ParseIP("10.42.0.0"), Mask: net.CIDRMask(24, 32)},
+				{IP: net.ParseIP("10.42.0.5"), Mask: net.CIDRMask(32, 32)},
+			},
 		},
 		{
-			PublicKey: k2, // never handshaked, no endpoint yet
+			PublicKey: k2, // never handshaked, no endpoint, no allowed-ips yet
 		},
 	}
 
@@ -44,6 +49,12 @@ func TestMapPeers(t *testing.T) {
 	}
 	if got[0].Endpoint != "203.0.113.5:51820" {
 		t.Errorf("peer[0] endpoint = %q, want 203.0.113.5:51820", got[0].Endpoint)
+	}
+	if got[0].TunnelIP != "10.42.0.5" {
+		t.Errorf("peer[0] tunnel IP = %q, want 10.42.0.5 (host route preferred over subnet)", got[0].TunnelIP)
+	}
+	if got[1].TunnelIP != "" {
+		t.Errorf("peer[1] tunnel IP = %q, want empty (no allowed-ips)", got[1].TunnelIP)
 	}
 	if !got[0].LastHandshake.Equal(hs) {
 		t.Errorf("peer[0] handshake = %v, want %v", got[0].LastHandshake, hs)

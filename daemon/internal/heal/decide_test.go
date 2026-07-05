@@ -25,10 +25,13 @@ func rec(key string, kind ActionKind, ago time.Duration) ActionRecord {
 
 func cfg() Config {
 	return Config{
-		Staleness:    180 * time.Second,
-		Window:       10 * time.Minute,
-		MaxReResolve: 3,
-		MaxBounce:    1,
+		StaleAfter:    30 * time.Second,
+		DegradedAfter: 60 * time.Second,
+		RestoredHold:  30 * time.Second,
+		Staleness:     180 * time.Second,
+		Window:        10 * time.Minute,
+		MaxReResolve:  3,
+		MaxBounce:     1,
 	}
 }
 

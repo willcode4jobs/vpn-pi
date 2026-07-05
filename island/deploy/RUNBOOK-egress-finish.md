@@ -143,11 +143,11 @@ seals a canary locally and POSTs it. Proposed:
 
 ```
 islandd canary \
-  --admin-dir ~/island-admin \            # the keypair from Part 2a (holds the private key)
-  --to-x25519 <vega-x25519> \             # from Part 2b (seal target)
-  --text "GREEN18 open the gate" \        # first token must be the keyword
-  --send http://10.42.0.2:8787 \          # vega; omit to just print the blob
-  --admin-token <vega-admin-token>        # /admin/canary is admin-token gated
+  --admin-dir ~/island-admin \
+  --to-x25519 <vega-x25519> \
+  --text "GREEN18 open the gate" \
+  --send http://10.42.0.2:8787 \
+  --admin-token <vega-admin-token>
 ```
 
 What it does (all pieces already exist in `src/core/`):

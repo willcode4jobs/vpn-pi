@@ -91,6 +91,16 @@ async function newNonce(): Promise<string> {
   return toB64(s.randombytes_buf(16));
 }
 
+/** Normalize an address to a mesh wg0 host IP (docs/wg-templates: 10.42.0.0/24), or
+ *  null if it's malformed or off-mesh. Unwraps v4-mapped v6 (`::ffff:10.42.0.5`). */
+function meshWg0(addr: string): string | null {
+  const ip = addr.startsWith("::ffff:") ? addr.slice(7) : addr;
+  const m = /^10\.42\.0\.(\d{1,3})$/.exec(ip);
+  if (!m) return null;
+  const host = Number(m[1]);
+  return host >= 1 && host <= 254 ? ip : null;
+}
+
 export async function peerPubOf(id: Identity, label: string, wg0: string): Promise<PeerPub> {
   return {
     ed25519: await toB64(id.ed25519.publicKey),
@@ -218,6 +228,8 @@ export class FriendBook {
   async accept(giverEd25519: string, now: Date = new Date()): Promise<string> {
     const p = this.pending.get(giverEd25519);
     if (!p) throw new FriendError("no pending request from that peer");
+    // re-check expiry: the TTL bounds the WHOLE handshake, not just receive()
+    if (Date.parse(p.token.expires) < now.getTime()) throw new FriendError("token expired");
     const blob = await makeAccept(this.id, this.label, this.wg0, p.token, now);
     this.pending.delete(giverEd25519);
     this.consumed.add(p.token.nonce);
@@ -233,8 +245,11 @@ export class FriendBook {
   /** Giver: confirm an accept blob -> friends. */
   async confirm(blobB64: string, now: Date = new Date()): Promise<FriendRecord> {
     const accept = await openAccept(this.id, blobB64);
-    if (!this.offered.has(accept.ref)) throw new FriendError("accept does not match any open offer");
+    const offer = this.offered.get(accept.ref);
+    if (!offer) throw new FriendError("accept does not match any open offer");
     if (this.consumed.has(accept.ref)) throw new FriendError("offer already consumed");
+    // re-check expiry: the TTL bounds the WHOLE handshake, not just receive()
+    if (Date.parse(offer.expires) < now.getTime()) throw new FriendError("offer expired");
     this.offered.delete(accept.ref);
     this.consumed.add(accept.ref);
     const rec: FriendRecord = {
@@ -267,10 +282,25 @@ export class FriendBook {
   friend(peerEd25519: string): FriendRecord | undefined {
     return this.friends.get(peerEd25519);
   }
-  /** Resolve a friend by their wg0 address (WireGuard pins each peer's IP to its key). */
+  /**
+   * Resolve a friend by their wg0 address. A friend's stored wg0 is SELF-ASSERTED
+   * (it comes from their token/accept), so this fails closed: malformed or off-mesh
+   * addresses never resolve, our own address never resolves, and if two friends
+   * claim the same wg0 the claim is ambiguous and neither is authorized.
+   * TODO(security): wg0 is still self-asserted — a friend can claim a mesh IP they
+   * don't hold. The real fix is pinning each friend's wg0 against the WireGuard
+   * peer table's AllowedIPs (the tunnel truth) instead of trusting the handshake.
+   */
   friendByWg0(wg0: string): FriendRecord | undefined {
-    for (const r of this.friends.values()) if (r.peer.wg0 === wg0) return r;
-    return undefined;
+    const ip = meshWg0(wg0);
+    if (ip === null || ip === this.wg0) return undefined;
+    let found: FriendRecord | undefined;
+    for (const r of this.friends.values()) {
+      if (r.peer.wg0 !== ip) continue;
+      if (found) return undefined; // duplicate claim -> ambiguous -> deny
+      found = r;
+    }
+    return found;
   }
 
   /**

@@ -39,10 +39,15 @@ func (r Role) String() string {
 // PeerState is a read-only snapshot of one WireGuard peer, as produced by the
 // netlink read path. The decision core consumes these; it never produces them.
 type PeerState struct {
-	// PublicKey is the peer's WireGuard public key — its stable identity.
+	// PublicKey is the peer's WireGuard public key — its stable identity, and
+	// the key used internally for remediation history and the endpoint cache.
 	PublicKey string
 	// Name is an optional human label (e.g. "sirius"), for logging only.
 	Name string
+	// TunnelIP is the peer's mesh/wg0 address (its host AllowedIP, e.g.
+	// "10.42.0.5"), used as a readable identifier in logs and the IDS feed in
+	// preference to the opaque public key. Empty if the peer has no AllowedIPs.
+	TunnelIP string
 	// LastHandshake is the time of the most recent successful handshake. The
 	// zero value means the peer has never handshaked.
 	LastHandshake time.Time
@@ -106,8 +111,9 @@ func (k ActionKind) String() string {
 // Action is a single remediation decision targeting a single peer.
 type Action struct {
 	Kind   ActionKind
-	Peer   string // public key of the peer the action targets
+	Peer   string // public key of the peer the action targets (the internal key)
 	Name   string // optional human label, copied from PeerState
+	IP     string // peer's tunnel address, copied from PeerState — for logging
 	Reason string // human-readable justification, for logging
 }
 
@@ -119,11 +125,33 @@ type ActionRecord struct {
 	At   time.Time
 }
 
-// Config holds the decision core's tunables.
+// Config holds the decision core's tunables. Two threshold groups live here and
+// are deliberately independent:
+//   - the time-tiered HEALTH classification (StaleAfter/DegradedAfter/RestoredHold),
+//     which drives the IDS feed and slightly leads remediation; and
+//   - the REMEDIATION trigger (Staleness) + circuit breaker (Window/MaxReResolve/
+//     MaxBounce), kept conservative so idle-but-healthy peers aren't re-resolved on
+//     every handshake gap. A peer can read "degraded" in the feed while remediation
+//     still holds off until Staleness — that decoupling is by design.
 type Config struct {
-	// Staleness is how long a peer may go without a handshake before it is
-	// considered dead. Keep it comfortably above the ~2 min keepalive renewal
-	// (150–180s) or healthy peers will flap.
+	// StaleAfter: handshake age ≥ this classifies a peer as stale. It must sit
+	// above WireGuard's healthy-link rekey envelope (~120s REKEY_AFTER_TIME plus
+	// a few seconds of retry slack, ≈135s): even a perfectly healthy link renews
+	// its handshake only that often, so any lower value classifies healthy peers
+	// stale between rekeys and makes ok unreachable after a first excursion.
+	StaleAfter time.Duration
+	// DegradedAfter: handshake age ≥ this classifies a peer as degraded. A
+	// never-handshaked peer is infinitely stale, so it reads degraded.
+	DegradedAfter time.Duration
+	// RestoredHold: after a stale/degraded peer returns to healthy it is marked
+	// "restored"; it only reaches ok after staying healthy this long (a recovery
+	// debounce). Slipping back past StaleAfter during the hold drops it back.
+	RestoredHold time.Duration
+
+	// Staleness is how long a peer may go without a handshake before REMEDIATION
+	// kicks in. Keep it comfortably above the ~2 min keepalive renewal (150–180s)
+	// or healthy peers get needlessly re-resolved. This does NOT gate the health
+	// classification above — only the act path.
 	Staleness time.Duration
 	// Window is the circuit-breaker lookback: how far back recent actions are
 	// counted when deciding whether to keep trying.
@@ -136,12 +164,20 @@ type Config struct {
 	MaxBounce int
 }
 
-// DefaultConfig returns conservative, flap-resistant defaults.
+// DefaultConfig returns the classification ladder (150s stale / 180s degraded /
+// 30s restored-hold) plus conservative, flap-resistant remediation defaults.
+// 150s is the fastest *sound* stale threshold: handshake age alone cannot
+// distinguish a dead tunnel from a healthy idle one before the ~135s rekey
+// envelope elapses. 180s (degraded) deliberately matches Staleness, so the feed
+// reads degraded at the same moment the act path starts remediating.
 func DefaultConfig() Config {
 	return Config{
-		Staleness:    180 * time.Second,
-		Window:       10 * time.Minute,
-		MaxReResolve: 3,
-		MaxBounce:    1,
+		StaleAfter:    150 * time.Second,
+		DegradedAfter: 180 * time.Second,
+		RestoredHold:  30 * time.Second,
+		Staleness:     180 * time.Second,
+		Window:        10 * time.Minute,
+		MaxReResolve:  3,
+		MaxBounce:     1,
 	}
 }

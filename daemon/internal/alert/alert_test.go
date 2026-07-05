@@ -37,8 +37,20 @@ func TestDiff(t *testing.T) {
 			[]heal.PeerStatus{status("a", heal.StateDegraded)}, map[string]string{"a": "degraded"}},
 		{"degraded→ok → recovered", map[string]heal.State{"a": heal.StateDegraded},
 			[]heal.PeerStatus{status("a", heal.StateOK)}, map[string]string{"a": "recovered"}},
+		{"degraded→restored → restored", map[string]heal.State{"a": heal.StateDegraded},
+			[]heal.PeerStatus{status("a", heal.StateRestored)}, map[string]string{"a": "restored"}},
+		{"restored→ok → recovered", map[string]heal.State{"a": heal.StateRestored},
+			[]heal.PeerStatus{status("a", heal.StateOK)}, map[string]string{"a": "recovered"}},
+		{"restored→stale → stale", map[string]heal.State{"a": heal.StateRestored},
+			[]heal.PeerStatus{status("a", heal.StateStale)}, map[string]string{"a": "stale"}},
 		{"multi: only the changed peer emits", map[string]heal.State{"a": heal.StateOK, "b": heal.StateOK},
 			[]heal.PeerStatus{status("a", heal.StateOK), status("b", heal.StateStale)}, map[string]string{"b": "stale"}},
+		{"removed while ok → gone", map[string]heal.State{"a": heal.StateOK},
+			nil, map[string]string{"a": "gone"}},
+		{"removed while degraded → gone", map[string]heal.State{"a": heal.StateDegraded},
+			nil, map[string]string{"a": "gone"}},
+		{"removal and change together", map[string]heal.State{"a": heal.StateOK, "b": heal.StateDegraded},
+			[]heal.PeerStatus{status("a", heal.StateStale)}, map[string]string{"a": "stale", "b": "gone"}},
 	}
 
 	for _, tt := range tests {
@@ -66,6 +78,35 @@ func TestDiff(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestDiffGoneIsOneShot verifies a removed peer emits gone exactly once (it
+// drops out of the next-state map, so the following tick is quiet) and that
+// multiple removals come out sorted by peer key for deterministic logs.
+func TestDiffGoneIsOneShot(t *testing.T) {
+	last := map[string]heal.State{"b": heal.StateStale, "a": heal.StateDegraded}
+	events, next := Diff(last, nil, ts)
+	if len(events) != 2 {
+		t.Fatalf("got %d events, want 2: %+v", len(events), events)
+	}
+	if events[0].Peer != "a" || events[1].Peer != "b" {
+		t.Errorf("gone events not sorted by peer key: %+v", events)
+	}
+	for _, e := range events {
+		if e.To != heal.StateGone || e.Kind() != "gone" {
+			t.Errorf("peer %s: To = %s, Kind = %s, want gone", e.Peer, e.To, e.Kind())
+		}
+		if e.From != last[e.Peer] {
+			t.Errorf("peer %s: From = %s, want %s", e.Peer, e.From, last[e.Peer])
+		}
+	}
+	if len(next) != 0 {
+		t.Fatalf("removed peers must not persist in next: %+v", next)
+	}
+	// Next tick, still absent → nothing further.
+	if events, _ := Diff(next, nil, ts.Add(30*time.Second)); len(events) != 0 {
+		t.Errorf("gone must be one-shot, got %+v", events)
 	}
 }
 

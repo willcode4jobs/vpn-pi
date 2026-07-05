@@ -100,7 +100,9 @@ export class ShellGateExec implements GateExec {
     this.base = cmd.split(/\s+/).filter(Boolean);
   }
   private async run(verb: "open" | "close"): Promise<void> {
-    const proc = Bun.spawn([...this.base, verb], { stdout: "ignore", stderr: "pipe" });
+    // stderr "ignore" (not "pipe"): nobody drains the pipe, so a chatty helper
+    // could fill the buffer and deadlock the child before it exits.
+    const proc = Bun.spawn([...this.base, verb], { stdout: "ignore", stderr: "ignore" });
     if ((await proc.exited) !== 0) throw new Error(`island-gate ${verb} failed`);
   }
   open(): Promise<void> {
@@ -128,14 +130,47 @@ export interface GateLogEntry {
 export class Gate {
   private _state: GateState = { state: "island", closesAt: null };
   private _log: GateLogEntry[] = [];
-  private consumed = new Set<string>(); // spent canary nonces (anti-replay)
+  // Spent canary nonce → consumed-at ms (anti-replay). Pruned once unreplayable.
+  // TODO(security): in-memory only — a daemon restart forgets spent nonces, so a
+  // captured canary can be replayed until it ages past the freshness window
+  // (ISLAND_CANARY_FRESHNESS, default 120s). Closing this needs a persistence hook
+  // wired in main.ts (like friends.ts's toJSON/fromJSON + ctx.persist); deferred
+  // rather than reaching into files this module doesn't own.
+  private consumed = new Map<string, number>();
   private timer: ReturnType<typeof setTimeout> | null = null;
+  private lock: Promise<void> = Promise.resolve(); // serializes open/close
+  private recloseAttempts = 0;
 
   constructor(
     private readonly llama: LlamaClient,
     private readonly exec: GateExec,
     private readonly ttlSeconds: number,
+    // How long spent nonces are kept before pruning. Must comfortably exceed the
+    // canary freshness window — anything older fails verifyCanary's freshness check
+    // anyway, so pruning it can never reopen a replay. Generous default so a config
+    // drift in ISLAND_CANARY_FRESHNESS can't outlive it.
+    private readonly noncePruneSeconds: number = 3600,
   ) {}
+
+  /** Run fn with open/close mutually excluded (a timer firing mid-open must never
+   *  race two island-gate processes). */
+  private locked<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.lock.then(fn);
+    this.lock = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /** (Re)arm the reclose timer. A close that fails re-arms itself via its catch. */
+  private scheduleReclose(delayMs: number, reason: string): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.close(reason).catch(() => {}); // failure already rescheduled a retry
+    }, delayMs);
+  }
 
   state(): GateState {
     return { ...this._state };
@@ -149,8 +184,14 @@ export class Gate {
     canary: Canary,
     now: Date = new Date(),
   ): Promise<{ opened: boolean; state: GateState; reason: string }> {
+    // prune nonces consumed long enough ago that the freshness check alone rejects
+    // any replay — bounds the set without weakening anti-replay.
+    const cutoff = now.getTime() - this.noncePruneSeconds * 1000;
+    for (const [nonce, consumedAt] of this.consumed) {
+      if (consumedAt < cutoff) this.consumed.delete(nonce);
+    }
     if (this.consumed.has(canary.nonce)) throw new CanaryError("canary already used");
-    this.consumed.add(canary.nonce); // consume on use, even if denied — no retries
+    this.consumed.set(canary.nonce, now.getTime()); // consume on use, even if denied — no retries
 
     const decision = await this.llama.decide(canary.text);
     if (!decision.approve) {
@@ -158,26 +199,58 @@ export class Gate {
       return { opened: false, state: this.state(), reason: decision.reason };
     }
 
-    await this.exec.open();
-    if (this.timer) clearTimeout(this.timer);
-    this._state = {
-      state: "internet",
-      closesAt: new Date(now.getTime() + this.ttlSeconds * 1000).toISOString(),
-    };
-    this.timer = setTimeout(() => void this.close("auto-reclose (ttl)"), this.ttlSeconds * 1000);
-    this._log.push({ at: now.toISOString(), action: "open", admin: canary.admin, reason: decision.reason });
-    return { opened: true, state: this.state(), reason: decision.reason };
+    return this.locked(async () => {
+      // clear the old reclose timer BEFORE exec.open, so it can't fire mid-flight
+      // and immediately reclose the window we're about to (re)open.
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      try {
+        await this.exec.open();
+      } catch (e) {
+        // we may have just disarmed a live window's timer — never leave
+        // "open, no timer": restore a reclose path before failing.
+        if (this._state.state === "internet") this.scheduleReclose(0, "reclose after failed re-open");
+        throw e;
+      }
+      this.recloseAttempts = 0;
+      this._state = {
+        state: "internet",
+        closesAt: new Date(now.getTime() + this.ttlSeconds * 1000).toISOString(),
+      };
+      this.scheduleReclose(this.ttlSeconds * 1000, "auto-reclose (ttl)");
+      this._log.push({ at: now.toISOString(), action: "open", admin: canary.admin, reason: decision.reason });
+      return { opened: true, state: this.state(), reason: decision.reason };
+    });
   }
 
   /** Close egress (manual early close or the auto-reclose timer). Always safe. */
   async close(reason: string, now: Date = new Date()): Promise<GateState> {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
-    await this.exec.close();
-    this._state = { state: "island", closesAt: null };
-    this._log.push({ at: now.toISOString(), action: "close", reason });
-    return this.state();
+    return this.locked(async () => {
+      try {
+        await this.exec.close();
+      } catch (e) {
+        // island-gate close failed — egress may still be open. Invariant: never
+        // "gate open, no timer, no retry". Leave _state as-is (it reflects reality)
+        // and keep retrying on capped exponential backoff until the close sticks.
+        this.recloseAttempts++;
+        const delayMs = Math.min(1000 * 2 ** this.recloseAttempts, 60_000);
+        this.scheduleReclose(delayMs, reason);
+        console.error(
+          `island-gate close failed (attempt ${this.recloseAttempts}, retry in ${delayMs}ms): ${(e as Error).message}`,
+        );
+        throw e;
+      }
+      // only tear down the reclose timer once the close has actually happened
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      this.recloseAttempts = 0;
+      this._state = { state: "island", closesAt: null };
+      this._log.push({ at: now.toISOString(), action: "close", reason });
+      return this.state();
+    });
   }
 }
