@@ -1,0 +1,37 @@
+#!/usr/sbin/nft -f
+# /etc/wireguard/mesh.nft — vega's baseline mesh forwarding (ISLAND MODE, the resting state).
+#
+# Loaded by wg-quick's PostUp (see docs/wg-templates/hub-wireguard.md); torn down on PostDown.
+# Two jobs:
+#   • relay spoke <-> spoke over wg0 (works with OR without internet egress), and
+#   • DENY egress to the uplink by default — "island" is forward drop + no MASQUERADE.
+#
+# The island-gate helper toggles egress by filling/flushing the `gate_egress` and
+# `postrouting` chains in THIS table. ONE table on purpose: in nftables a `drop` in any
+# base chain wins over an `accept` in another, so a *separate* island-mode table with
+# `policy drop` would veto island-gate's accept and the gate could never open. Keep the
+# baseline and the toggle in the same table so the gate's rules actually take effect.
+#
+# `inet` = dual-stack (IPv4 + IPv6). Replace <uplink> with vega's real internet iface
+# (find it: `ip route get 1.1.1.1` → the `dev <iface>`; often end0 / wlan0, not eth0).
+# Also requires forwarding on:  net.ipv4.ip_forward=1  and  net.ipv6.conf.all.forwarding=1.
+
+table inet mesh {
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+
+    ct state established,related accept        # return traffic for any allowed flow
+    iifname "wg0" oifname "wg0" accept         # spoke <-> spoke relay — ALWAYS on (even island mode)
+    iifname "wg0" jump gate_egress             # wg0 -> uplink: decided by the gate below
+  }
+
+  # Empty in island mode → the jump returns and `forward`'s policy drop blocks egress.
+  # `island-gate open` adds the uplink accept here; `island-gate close` flushes it.
+  chain gate_egress { }
+
+  chain postrouting {
+    type nat hook postrouting priority srcnat; policy accept;
+    # Empty in island mode = NO MASQUERADE (defence in depth: even a leaked egress packet
+    # keeps a private source and dies). `island-gate open` adds the masquerade; `close` flushes it.
+  }
+}
