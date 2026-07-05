@@ -664,7 +664,9 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
     }
     const body = await readJson(req);
     // The admin never types the keyword; we prefix it (it must be the canary's first token).
-    const reason = String(body.text ?? "").trim() || "open the internet";
+    // A reason IS required — it's the intent Llama evaluates; no silent default open.
+    const reason = String(body.text ?? "").trim();
+    if (reason.length < 3) throw new FriendError("a reason is required to open the gate — Llama evaluates it");
     const text = `${ctx.canaryKeyword} ${reason}`;
     const blob = await makeCanary(aa.identity, ctx.canaryKeyword, text, aa.targetX25519);
     const r = await fetch(`${aa.target}/admin/canary`, {
