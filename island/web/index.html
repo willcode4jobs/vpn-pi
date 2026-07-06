@@ -360,25 +360,49 @@ async function Admin(v){
 
 // ---------- Security (admin-only, collector node only): the mesh IDS feed ----------
 // Renders a full per-peer roster (every link's status, ok included) plus fail2ban blocks.
+// Two sources: THIS node's live roster (from /api/home — its own wg + wg-selfheal journal,
+// always available, no report round-trip) merged with the cross-node report store
+// (/admin/events). The local rows are why the tab is never empty just because remote
+// reports haven't landed — the journal is read directly here.
 const SEC_PILL={ok:"#1a7f37",restored:"#1a7f37",stale:"#9a6700",degraded:"#cf222e"}; // status → colour
 const SEC_SEV={degraded:0,stale:1,restored:2,ok:3};                                  // worst first
+const SEC_STALE_S=150,SEC_DEGR_S=180; // link ladder — MUST match daemon/sysinfo (classifyLink)
 // Peers hard-ignored in the feed regardless of what any node reports. 10.42.0.6 is a
 // node that may or may not return; suppress it here so it never clutters the roster.
 const SEC_IGNORE=["10.42.0.6"];
 const SEC_STALE_MS=180000; // no report in 3× the 60s push interval ⇒ reporter is stalled
 function secIgnored(e){const hay=`${e.subject} ${e.detail}`;return SEC_IGNORE.some(ip=>hay.includes(ip));}
 function secRank(e){return e.kind==="fail2ban"?0:(SEC_SEV[e.state]??1);}
+function secClassify(a){return a==null||a>=SEC_DEGR_S?"degraded":a>=SEC_STALE_S?"stale":"ok";}
+// Build this node's roster straight from /api/home (local wg peers + wg-selfheal journal).
+function secLocalRows(home,nowIso){
+  if(!home||!home.wg||!home.wg.peers)return [];
+  const dmap=new Map((home.selfheal||[]).map(s=>[s.peer,s]));
+  const rows=home.wg.peers.map(p=>{
+    const ip=p.wg0||"?",d=dmap.get(p.wg0);
+    let state=secClassify(p.handshake_age_s);
+    if(d&&d.state==="restored"&&state==="ok")state="restored"; // daemon adds the debounced recovery
+    const age=p.handshake_age_s==null?"no handshake yet":`${p.handshake_age_s}s since handshake`;
+    const detail=[p.label?ip:null,age,(d&&d.endpoint)||null].filter(Boolean).join(" — ");
+    return {kind:"link",subject:p.label||ip,detail,state,node:"this node",at:nowIso,stale:false};
+  });
+  for(const j of (home.fail2ban||[]))for(const ip of (j.banned_ips||[]))rows.push({kind:"fail2ban",subject:ip,detail:`blocked by ${j.jail}`,node:"this node",at:nowIso,stale:false});
+  return rows;
+}
 async function Security(v){
   const gen=renderGen;
   const c=el(`<div class="card"><h2>Security</h2><p class="sub">Every peer's link status across the mesh, plus fail2ban blocks.</p><div id="b" class="empty">Loading…</div></div>`);v.append(c);
   try{
-    const d=await api("/admin/events");
+    // Local roster (/api/home) is always available; remote reports (/admin/events) fill in the
+    // rest of the mesh. Either may be empty; render whatever we have.
+    const [d,home]=await Promise.all([api("/admin/events").catch(()=>({nodes:[]})),api("/api/home").catch(()=>null)]);
     if(gen!==renderGen)return; // a newer render wiped the view while we were loading
-    const now=Date.now();
-    const rows=d.nodes.flatMap(n=>{
+    const now=Date.now(),nowIso=new Date(now).toISOString();
+    const remote=(d.nodes||[]).flatMap(n=>{
       const stale=n.received?now-new Date(n.received).getTime()>SEC_STALE_MS:false;
-      return n.events.map(e=>({...e,node:n.label,at:n.at,stale}));
-    }).filter(e=>!secIgnored(e));
+      return (n.events||[]).map(e=>({...e,node:n.label,at:n.at,stale}));
+    });
+    const rows=[...secLocalRows(home,nowIso),...remote].filter(e=>!secIgnored(e));
     // Worst status first, then most-recent report; a stalled node's rows sink to the bottom.
     rows.sort((a,b)=>(a.stale-b.stale)||(secRank(a)-secRank(b))||b.at.localeCompare(a.at));
     c.querySelector("#b").outerHTML=`<div id="b">${rows.length?rows.map(e=>{
