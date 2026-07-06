@@ -123,6 +123,27 @@ export async function readWg(
   return { iface, peers };
 }
 
+// --- link health ladder (shared with the wg-selfheal daemon) ----------------
+//
+// The daemon classifies peers by handshake age on the SAME boundaries (see
+// daemon/internal/heal/types.go DefaultConfig: StaleAfter=150s / DegradedAfter=180s).
+// Keep these in lockstep with that ladder so the app's per-peer roster and the
+// daemon's self-heal feed agree on where a link crosses from ok → stale → degraded.
+// Both sit above WireGuard's ~135s rekey envelope so a healthy idle peer isn't misread.
+export const STALE_AFTER_S = 150;
+export const DEGRADED_AFTER_S = 180;
+
+export type LinkState = "ok" | "stale" | "degraded";
+
+/** Classify a peer's link by handshake age alone (null = never handshaked → degraded).
+ *  This is the stateless base state for the roster; the daemon adds the debounced
+ *  "restored" nuance on top (which age alone cannot express). */
+export function classifyLink(handshakeAgeS: number | null): LinkState {
+  if (handshakeAgeS == null || handshakeAgeS >= DEGRADED_AFTER_S) return "degraded";
+  if (handshakeAgeS >= STALE_AFTER_S) return "stale";
+  return "ok";
+}
+
 // --- synthetic data for --mock (laptop demo, no mesh) -----------------------
 
 export function mockFail2ban(): JailStatus[] {

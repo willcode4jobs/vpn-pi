@@ -359,15 +359,35 @@ async function Admin(v){
 }
 
 // ---------- Security (admin-only, collector node only): the mesh IDS feed ----------
+// Renders a full per-peer roster (every link's status, ok included) plus fail2ban blocks.
+const SEC_PILL={ok:"#1a7f37",restored:"#1a7f37",stale:"#9a6700",degraded:"#cf222e"}; // status → colour
+const SEC_SEV={degraded:0,stale:1,restored:2,ok:3};                                  // worst first
+// Peers hard-ignored in the feed regardless of what any node reports. 10.42.0.6 is a
+// node that may or may not return; suppress it here so it never clutters the roster.
+const SEC_IGNORE=["10.42.0.6"];
+const SEC_STALE_MS=180000; // no report in 3× the 60s push interval ⇒ reporter is stalled
+function secIgnored(e){const hay=`${e.subject} ${e.detail}`;return SEC_IGNORE.some(ip=>hay.includes(ip));}
+function secRank(e){return e.kind==="fail2ban"?0:(SEC_SEV[e.state]??1);}
 async function Security(v){
   const gen=renderGen;
-  const c=el(`<div class="card"><h2>Security</h2><p class="sub">fail2ban blocks and degraded links across every node.</p><div id="b" class="empty">Loading…</div></div>`);v.append(c);
+  const c=el(`<div class="card"><h2>Security</h2><p class="sub">Every peer's link status across the mesh, plus fail2ban blocks.</p><div id="b" class="empty">Loading…</div></div>`);v.append(c);
   try{
     const d=await api("/admin/events");
     if(gen!==renderGen)return; // a newer render wiped the view while we were loading
-    const rows=d.nodes.flatMap(n=>n.events.map(e=>({...e,node:n.label,at:n.at})));
-    rows.sort((a,b)=>b.at.localeCompare(a.at));
-    c.querySelector("#b").outerHTML=`<div id="b">${rows.length?rows.map(e=>`<div class="row"><div class="avatar">${e.kind==="fail2ban"?ICONS.block:ICONS.alert}</div><div class="grow"><div class="name">${esc(e.subject)} <span class="meta">· ${esc(e.kind)}</span></div><div class="meta">${esc(e.detail)} — on ${esc(e.node)} · ${new Date(e.at).toLocaleString()}</div></div></div>`).join(""):`<div class="empty">No events reported yet</div>`}</div>`;
+    const now=Date.now();
+    const rows=d.nodes.flatMap(n=>{
+      const stale=n.received?now-new Date(n.received).getTime()>SEC_STALE_MS:false;
+      return n.events.map(e=>({...e,node:n.label,at:n.at,stale}));
+    }).filter(e=>!secIgnored(e));
+    // Worst status first, then most-recent report; a stalled node's rows sink to the bottom.
+    rows.sort((a,b)=>(a.stale-b.stale)||(secRank(a)-secRank(b))||b.at.localeCompare(a.at));
+    c.querySelector("#b").outerHTML=`<div id="b">${rows.length?rows.map(e=>{
+      const healthy=e.state==="ok"||e.state==="restored";
+      const av=e.kind==="fail2ban"?ICONS.block:healthy?`<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${SEC_PILL[e.state]}"></span>`:ICONS.alert;
+      const pill=e.state?` <span style="font-size:11px;padding:1px 7px;border-radius:9px;color:#fff;background:${SEC_PILL[e.state]||"#57606a"}">${esc(e.state)}</span>`:"";
+      const staleTag=e.stale?` <span class="meta" style="color:#9a6700">· no report in ${Math.round((now-new Date(e.at).getTime())/60000)}m</span>`:"";
+      return `<div class="row"${e.stale?' style="opacity:.55"':""}><div class="avatar">${av}</div><div class="grow"><div class="name">${esc(e.subject)}${pill} <span class="meta">· ${esc(e.kind)}</span></div><div class="meta">${esc(e.detail)} — on ${esc(e.node)} · ${new Date(e.at).toLocaleString()}${staleTag}</div></div></div>`;
+    }).join(""):`<div class="empty">No nodes reporting yet</div>`}</div>`;
   }catch(e){snack(e.message,true);}
 }
 
