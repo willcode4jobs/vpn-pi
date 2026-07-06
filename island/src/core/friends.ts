@@ -51,6 +51,19 @@ export interface FriendAccept {
   sig: string; // base64 Ed25519 over the accept without `sig`
 }
 
+/** A signed notice that the sender has ended the friendship. Destroy-only by
+ *  construction: it names no keys to trust — the recipient verifies the signature
+ *  against the friend key it ALREADY stores for `from`, so only the real
+ *  counterparty can produce one, and it can tear down only that one relationship. */
+export interface FriendRevoke {
+  v: 1;
+  from: string; // revoker's ed25519 (base64) — must match a stored friend
+  target: string; // revokee's ed25519 — must be the recipient itself
+  nonce: string; // single-use (replay protection, shares the consumed set)
+  at: string; // ISO 8601 — must postdate the friendship it revokes
+  sig: string; // base64 Ed25519 over the notice without `sig`
+}
+
 export type FriendState = "offered" | "pending" | "friends";
 
 export interface FriendRecord {
@@ -73,6 +86,15 @@ function tokenSignable(t: Omit<FriendToken, "sig">): { [k: string]: Json } {
 function acceptSignable(a: Omit<FriendAccept, "sig">): { [k: string]: Json } {
   return { v: a.v, from: peerPubJson(a.from), ref: a.ref, issued: a.issued };
 }
+
+function revokeSignable(r: Omit<FriendRevoke, "sig">): { [k: string]: Json } {
+  return { v: r.v, from: r.from, target: r.target, nonce: r.nonce, at: r.at };
+}
+
+// A revoke's `at` (sender clock) must postdate the friendship's `since` (receiver
+// clock, set at accept/confirm) — this kills replays of a notice captured during a
+// PREVIOUS friendship era after the pair re-friends. Allow modest mesh clock skew.
+const REVOKE_SKEW_MS = 120_000;
 
 // ---- low-level sign/verify -------------------------------------------------
 
@@ -262,9 +284,59 @@ export class FriendBook {
     return rec;
   }
 
-  /** One-sided, immediate. This is the ONLY way a friendship ends (admin delete uses it). */
+  /** One-sided, immediate. Every friendship end goes through here — issueRevoke and
+   *  receiveRevoke both bottom out in this local delete. */
   revoke(peerEd25519: string): boolean {
     return this.friends.delete(peerEd25519);
+  }
+
+  /** Initiator: end a friendship locally AND mint the signed notice that lets the
+   *  (now ex-)friend drop us too. Returns the notice plus where to deliver it, or
+   *  null if there was no such friend. Delivery is the caller's job (best-effort —
+   *  the local removal stands even if the peer is offline). */
+  async issueRevoke(peerEd25519: string, now: Date = new Date()): Promise<{ notice: FriendRevoke; wg0: string } | null> {
+    const rec = this.friends.get(peerEd25519);
+    if (!rec) return null;
+    const body = {
+      v: 1 as const,
+      from: await this.selfEd(),
+      target: peerEd25519,
+      nonce: await newNonce(),
+      at: now.toISOString(),
+    };
+    const notice: FriendRevoke = { ...body, sig: await sign(revokeSignable(body), this.id.ed25519.secretKey) };
+    this.friends.delete(peerEd25519);
+    return { notice, wg0: rec.peer.wg0 };
+  }
+
+  /** Recipient: verify an inbound revoke notice and drop that friendship. The
+   *  signature is checked against the key the friendship itself established (the
+   *  STORED record for `from`) — never against anything the notice asserts — so a
+   *  non-friend can't tear anything down and the notice can only ever destroy the
+   *  one relationship its signer owns. Throws FriendError on any problem. */
+  async receiveRevoke(n: FriendRevoke, now: Date = new Date()): Promise<FriendRecord> {
+    if (
+      !n || n.v !== 1 ||
+      typeof n.from !== "string" || typeof n.target !== "string" ||
+      typeof n.nonce !== "string" || typeof n.at !== "string" || typeof n.sig !== "string"
+    ) {
+      throw new FriendError("malformed revoke");
+    }
+    if (n.target !== (await this.selfEd())) throw new FriendError("revoke not addressed to this node");
+    const rec = this.friends.get(n.from);
+    if (!rec) throw new FriendError("not a friend"); // unknown or already removed — nothing to do
+    if (this.consumed.has(n.nonce)) throw new FriendError("revoke already used");
+    if (!(await verify(revokeSignable(n), n.sig, rec.peer.ed25519))) {
+      throw new FriendError("bad revoke signature");
+    }
+    // A notice minted before this friendship began cannot end it (replay from a
+    // previous era, after re-friending). `since` is our clock; `at` is theirs.
+    const at = Date.parse(n.at);
+    if (Number.isNaN(at)) throw new FriendError("malformed revoke");
+    if (at < Date.parse(rec.since) - REVOKE_SKEW_MS) throw new FriendError("stale revoke");
+    this.consumed.add(n.nonce);
+    this.friends.delete(n.from);
+    return rec;
   }
 
   listFriends(): FriendRecord[] {

@@ -594,13 +594,15 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
   }
   // Delete (revoke) a friendship. There is deliberately NO POST/create — admin can
   // delete but never forge (a friendship only exists via the verified handshake).
+  // Mutual like the operator route: the peer gets a signed revoke notice, best-effort.
   const adminDel = path.match(/^\/admin\/friends\/(.+)$/);
   if (method === "DELETE" && adminDel) {
     requireAdmin(req, server, ctx);
-    const removed = ctx.book.revoke(decodeURIComponent(adminDel[1]!));
-    if (!removed) return new Response("no such friend", { status: 404 });
+    const r = await ctx.book.issueRevoke(decodeURIComponent(adminDel[1]!));
+    if (!r) return new Response("no such friend", { status: 404 });
     await ctx.persist();
-    return new Response(null, { status: 204 });
+    const delivered = r.wg0 ? await deliver(r.wg0, ctx.peerPort, "/api/friends/revoke-inbound", { notice: r.notice }) : false;
+    return Response.json({ ok: true, peer_notified: delivered });
   }
 
   // ---- first-run admin token reveal ----
@@ -799,14 +801,26 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
       wg0: ctx.wg0,
     });
   }
-  // Remove one of your own friendships (one-sided revoke). Operator action.
+  // Remove one of your own friendships — MUTUAL: revoke locally, then send the peer
+  // a signed revoke notice so their side drops us too. Delivery is best-effort (the
+  // peer may be offline); the local removal stands either way, and `peer_notified`
+  // tells the operator whether the other side actually heard.
   const friendDel = path.match(/^\/api\/friends\/(.+)$/);
   if (method === "DELETE" && friendDel) {
     requireOperator(req, server, ctx);
-    const removed = ctx.book.revoke(decodeURIComponent(friendDel[1]!));
-    if (!removed) return new Response("no such friend", { status: 404 });
+    const r = await ctx.book.issueRevoke(decodeURIComponent(friendDel[1]!));
+    if (!r) return new Response("no such friend", { status: 404 });
     await ctx.persist();
-    return new Response(null, { status: 204 });
+    const delivered = r.wg0 ? await deliver(r.wg0, ctx.peerPort, "/api/friends/revoke-inbound", { notice: r.notice }) : false;
+    return Response.json({ ok: true, peer_notified: delivered });
+  }
+  // Inbound (from a peer, crypto-gated): a revoke notice. receiveRevoke verifies the
+  // signature against the STORED friend key — destroy-only, a non-friend can't use it.
+  if (method === "POST" && path === "/api/friends/revoke-inbound") {
+    const body = await readJson(req);
+    const removed = await ctx.book.receiveRevoke(body.notice as never);
+    await ctx.persist();
+    return Response.json({ ok: true, removed: removed.peer.label });
   }
 
   // ---- messaging (Phase D) — direct P2P, sealed ----

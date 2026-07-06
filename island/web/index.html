@@ -224,7 +224,7 @@ async function Friends(v){
     list.querySelector("#l").outerHTML=`<div id="l">${meRow}${friendRows||`<div class="empty">No friends yet — add one below</div>`}</div>`;
     list.querySelectorAll("[data-view]").forEach(b=>b.onclick=()=>{const kb=list.querySelector("#kb"+b.dataset.view);kb.style.display=kb.style.display==="none"?"":"none";});
     list.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(b.dataset.copy));
-    list.querySelectorAll("[data-rm]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friend? They can no longer write to this node."))return;try{await api("/api/friends/"+encodeURIComponent(b.dataset.rm),{method:"DELETE"});snack("Friend removed");render();}catch(e){snack(e.message,true);}});
+    list.querySelectorAll("[data-rm]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friend? The friendship is removed on both nodes."))return;try{const r=await api("/api/friends/"+encodeURIComponent(b.dataset.rm),{method:"DELETE"});snack(r&&r.peer_notified?"Friend removed on both sides":"Removed here — peer unreachable, their side still lists you");render();}catch(e){snack(e.message,true);}});
   }catch(e){snack(e.message,true);}
   if(gen!==renderGen)return; // don't append the cards below into a newer view
 
@@ -361,7 +361,7 @@ async function Admin(v){
   try{const d=await api("/admin/friends");
     fc.querySelector("#l").outerHTML=`<div id="l">${d.friends.map(f=>`<div class="row"><div class="avatar">${initial(f.peer.label)}</div><div class="grow"><div class="name">${esc(f.peer.label)}</div><div class="meta key" data-copy="${esc(f.peer.ed25519)}" title="click to copy full key">${esc(f.peer.ed25519.slice(0,24))}…</div></div><button class="btn danger sm" data-del="${esc(f.peer.ed25519)}">Remove</button></div>`).join("")||`<div class="empty">No friendships</div>`}</div>`;
     fc.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(b.dataset.copy));
-    fc.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friendship?"))return;try{await api("/admin/friends/"+encodeURIComponent(b.dataset.del),{method:"DELETE"});render();}catch(e){snack(e.message,true);}});
+    fc.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friendship? It is removed on both nodes."))return;try{const r=await api("/admin/friends/"+encodeURIComponent(b.dataset.del),{method:"DELETE"});snack(r&&r.peer_notified?"Friendship removed on both sides":"Removed here — peer unreachable, their side still lists this node");render();}catch(e){snack(e.message,true);}});
   }catch(e){fc.querySelector("#l").innerHTML=`<div class="empty">${esc(e.message)}</div>`;}
 }
 

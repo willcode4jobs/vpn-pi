@@ -149,3 +149,91 @@ test("book serializes and restores (friends survive a restart)", async () => {
   const restored = FriendBook.fromJSON(alice, "alice", "10.42.0.1", JSON.parse(JSON.stringify(aliceBook)));
   expect(restored.isFriend(await ed(bob))).toBe(true);
 });
+
+// ---- mutual removal: signed revoke notices ----------------------------------
+
+async function friends() {
+  const p = await pair();
+  const token = await p.aliceBook.issueToken(3600);
+  await p.bobBook.receive(token);
+  await p.aliceBook.confirm(await p.bobBook.accept(await ed(p.alice)));
+  return p;
+}
+
+test("issueRevoke + receiveRevoke: both sides drop the friendship", async () => {
+  const { alice, bob, aliceBook, bobBook } = await friends();
+  const r = (await aliceBook.issueRevoke(await ed(bob)))!;
+  expect(r.wg0).toBe("10.42.0.5"); // where to deliver: bob's stored wg0
+  expect(aliceBook.isFriend(await ed(bob))).toBe(false); // local removal is immediate
+  const removed = await bobBook.receiveRevoke(r.notice);
+  expect(removed.peer.label).toBe("alice");
+  expect(bobBook.isFriend(await ed(alice))).toBe(false); // and now mutual
+});
+
+test("issueRevoke returns null for a non-friend (route 404s)", async () => {
+  const { aliceBook } = await pair();
+  expect(await aliceBook.issueRevoke("not-a-friend-key")).toBeNull();
+});
+
+test("receiveRevoke rejects a notice from a non-friend (nothing to destroy)", async () => {
+  const { bob, bobBook } = await friends();
+  const mallory = await generateIdentity();
+  // mallory can't MINT one via the API (not friends with bob), so forge the shape by
+  // hand — correctly addressed to bob, but `from` matches no stored friend record.
+  const forged = {
+    v: 1 as const,
+    from: await ed(mallory),
+    target: await ed(bob),
+    nonce: "n",
+    at: new Date().toISOString(),
+    sig: "AAAA",
+  };
+  expect(bobBook.receiveRevoke(forged as never)).rejects.toThrow(/not a friend/);
+});
+
+test("receiveRevoke rejects a tampered notice (signature covers all fields)", async () => {
+  const { bob, aliceBook, bobBook } = await friends();
+  const r = (await aliceBook.issueRevoke(await ed(bob)))!;
+  const tampered = { ...r.notice, at: new Date(Date.now() + 60_000).toISOString() };
+  expect(bobBook.receiveRevoke(tampered)).rejects.toThrow(/bad revoke signature/);
+});
+
+test("receiveRevoke rejects a notice addressed to someone else", async () => {
+  const { alice, bob, aliceBook, bobBook } = await friends();
+  // carol also friends bob... simplest: alice mints a revoke for bob, carol replays it to herself.
+  // Here: bob receives a notice whose target is NOT bob.
+  const r = (await aliceBook.issueRevoke(await ed(bob)))!;
+  const misaddressed = { ...r.notice, target: await ed(alice) }; // breaks sig too, but target check fires first
+  expect(bobBook.receiveRevoke(misaddressed)).rejects.toThrow(/not addressed/);
+});
+
+test("a revoke notice is single-use (nonce joins the consumed set)", async () => {
+  const { alice, bob, aliceBook, bobBook } = await friends();
+  const r = (await aliceBook.issueRevoke(await ed(bob)))!;
+  await bobBook.receiveRevoke(r.notice);
+  // re-friend, then replay the captured notice
+  const token = await aliceBook.issueToken(3600);
+  await bobBook.receive(token);
+  await aliceBook.confirm(await bobBook.accept(await ed(alice)));
+  expect(bobBook.receiveRevoke(r.notice)).rejects.toThrow(/already used/);
+});
+
+test("a revoke minted before the current friendship began is stale (era replay)", async () => {
+  const { alice, bob, aliceBook, bobBook } = await friends();
+  const old = new Date("2026-01-01T00:00:00Z");
+  const r = (await aliceBook.issueRevoke(await ed(bob), old))!;
+  // bob never saw it; the pair re-friends much later
+  const token = await aliceBook.issueToken(3600);
+  await bobBook.receive(token);
+  await aliceBook.confirm(await bobBook.accept(await ed(alice)));
+  expect(bobBook.receiveRevoke(r.notice)).rejects.toThrow(/stale revoke/);
+});
+
+test("revoke state survives a restart (consumed nonce persists)", async () => {
+  const { alice, bob, aliceBook, bobBook } = await friends();
+  const r = (await aliceBook.issueRevoke(await ed(bob)))!;
+  await bobBook.receiveRevoke(r.notice);
+  const restored = FriendBook.fromJSON(bob, "bob", "10.42.0.5", JSON.parse(JSON.stringify(bobBook)));
+  expect(restored.isFriend(await ed(alice))).toBe(false);
+  expect(restored.receiveRevoke(r.notice)).rejects.toThrow(FriendError); // replay still dead after restart
+});
