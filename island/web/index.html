@@ -181,13 +181,20 @@ async function Home(v){
       <div class="hsub">${d.gate.reachable===false?`The gate node${gtag} is unreachable.`:(on?("The gate is open"+(d.gate.closes_at?` · recloses ${new Date(d.gate.closes_at).toLocaleTimeString()}`:"")):"A private network for you and your friends — no internet, by default.")}</div>`;
     c.querySelector("#b").outerHTML=`<div id="b">
       <h3>Connectivity (${esc(d.wg.iface)})</h3>
-      ${d.wg.peers.map(p=>`<div class="row"><div class="avatar">${initial(p.label||p.wg0)}</div><div class="grow"><div class="name">${esc(p.label||"unknown")}</div><div class="meta">${esc(p.wg0)}</div></div><span class="${p.up?"up":"down"}">${p.up?"online":"offline"}</span></div>`).join("")||`<div class="empty">No peers</div>`}
+      ${(()=>{
+        const live=d.wg.peers.map(p=>`<div class="row"><div class="avatar">${initial(p.label||p.wg0)}</div><div class="grow"><div class="name">${esc(p.label||"unknown")}</div><div class="meta">${esc(p.wg0)}</div></div><span class="${p.up?"up":"down"}">${p.up?"online":"offline"}</span></div>`);
+        // `wg show` needs CAP_NET_ADMIN and islandd runs unprivileged, so the live list is
+        // empty on a deployed node — fall back to the wg-selfheal journal roster.
+        const jr=live.length?[]:(d.selfheal||[]).filter(s=>s.state&&s.state!=="gone").map(s=>{const on=s.state==="ok"||s.state==="restored";return `<div class="row"><div class="avatar">${initial(s.peer)}</div><div class="grow"><div class="name">${esc(s.peer)}</div><div class="meta">${esc(s.state)}${s.endpoint?` · ${esc(s.endpoint)}`:""}</div></div><span class="${on?"up":"down"}">${on?"online":"offline"}</span></div>`});
+        return [...live,...jr].join("")||`<div class="empty">No peers</div>`;
+      })()}
       <h3>Friend requests${d.requests.length?` (${d.requests.length})`:""}</h3>
       ${d.requests.map(r=>`<div class="row"><div class="avatar">${initial(r.from_label)}</div><div class="grow"><div class="name">${esc(r.from_label)}</div><div class="meta">wants to connect</div></div></div>`).join("")||`<div class="empty">None — accept invites under Friends</div>`}
       <h3>Security</h3>
       ${(()=>{
         const blocks=d.fail2ban.filter(j=>j.currently_banned>0).map(j=>`<div class="row"><div class="avatar">${ICONS.block}</div><div class="grow"><div class="name">${esc(j.jail)} <span class="meta">· blocked</span></div><div class="meta">${j.currently_banned} IP${j.currently_banned>1?"s":""} banned</div></div></div>`);
-        const heal=(d.selfheal||[]).map(s=>`<div class="row"><div class="avatar">${ICONS.alert}</div><div class="grow"><div class="name">${esc(s.peer)} <span class="meta">· self-heal</span></div><div class="meta">${esc(s.state)}${s.endpoint?` (${esc(s.endpoint)})`:""}</div></div></div>`);
+        // selfheal is now the FULL roster (ok included) — this panel only surfaces problems
+        const heal=(d.selfheal||[]).filter(s=>s.state&&s.state!=="ok").map(s=>`<div class="row"><div class="avatar">${ICONS.alert}</div><div class="grow"><div class="name">${esc(s.peer)} <span class="meta">· self-heal</span></div><div class="meta">${esc(s.state)}${s.endpoint?` (${esc(s.endpoint)})`:""}</div></div></div>`);
         const rows=[...blocks,...heal];
         return rows.length?rows.join(""):`<div class="empty">All clear — no blocks or degraded links</div>`;
       })()}
@@ -364,28 +371,36 @@ async function Admin(v){
 // always available, no report round-trip) merged with the cross-node report store
 // (/admin/events). The local rows are why the tab is never empty just because remote
 // reports haven't landed — the journal is read directly here.
-const SEC_PILL={ok:"#1a7f37",restored:"#1a7f37",stale:"#9a6700",degraded:"#cf222e"}; // status → colour
-const SEC_SEV={degraded:0,stale:1,restored:2,ok:3};                                  // worst first
+const SEC_PILL={ok:"#1a7f37",restored:"#1a7f37",stale:"#9a6700",degraded:"#cf222e",gone:"#57606a"}; // status → colour
+const SEC_SEV={degraded:0,gone:1,stale:2,restored:3,ok:4};                                          // worst first
 const SEC_STALE_S=150,SEC_DEGR_S=180; // link ladder — MUST match daemon/sysinfo (classifyLink)
 // Peers hard-ignored in the feed regardless of what any node reports. 10.42.0.6 is a
 // node that may or may not return; suppress it here so it never clutters the roster.
 const SEC_IGNORE=["10.42.0.6"];
 const SEC_STALE_MS=180000; // no report in 3× the 60s push interval ⇒ reporter is stalled
 function secIgnored(e){const hay=`${e.subject} ${e.detail}`;return SEC_IGNORE.some(ip=>hay.includes(ip));}
-function secRank(e){return e.kind==="fail2ban"?0:(SEC_SEV[e.state]??1);}
+function secRank(e){return e.kind==="fail2ban"?0:(SEC_SEV[e.state]??2);}
 function secClassify(a){return a==null||a>=SEC_DEGR_S?"degraded":a>=SEC_STALE_S?"stale":"ok";}
-// Build this node's roster straight from /api/home (local wg peers + wg-selfheal journal).
+// Build this node's roster straight from /api/home. Two sources: live wg peers first,
+// then wg-selfheal journal peers the live read didn't cover. On a deployed node the
+// live list is EMPTY (`wg show` needs CAP_NET_ADMIN; islandd is unprivileged), so the
+// daemon's journal — which islandd CAN read — is the usual roster source.
 function secLocalRows(home,nowIso){
-  if(!home||!home.wg||!home.wg.peers)return [];
+  if(!home)return [];
   const dmap=new Map((home.selfheal||[]).map(s=>[s.peer,s]));
-  const rows=home.wg.peers.map(p=>{
-    const ip=p.wg0||"?",d=dmap.get(p.wg0);
+  const rows=((home.wg&&home.wg.peers)||[]).map(p=>{
+    const ip=p.wg0||"?",d=dmap.get(p.wg0);dmap.delete(p.wg0);
     let state=secClassify(p.handshake_age_s);
     if(d&&d.state==="restored"&&state==="ok")state="restored"; // daemon adds the debounced recovery
     const age=p.handshake_age_s==null?"no handshake yet":`${p.handshake_age_s}s since handshake`;
     const detail=[p.label?ip:null,age,(d&&d.endpoint)||null].filter(Boolean).join(" — ");
     return {kind:"link",subject:p.label||ip,detail,state,node:"this node",at:nowIso,stale:false};
   });
+  for(const [peer,s] of dmap){
+    if(!s.state)continue;
+    const age=s.handshakeAge?(s.handshakeAge==="never"?"no handshake yet":`handshake ${s.handshakeAge} ago`):null;
+    rows.push({kind:"link",subject:peer,detail:[age,s.endpoint||null].filter(Boolean).join(" — "),state:s.state,node:"this node",at:nowIso,stale:false});
+  }
   for(const j of (home.fail2ban||[]))for(const ip of (j.banned_ips||[]))rows.push({kind:"fail2ban",subject:ip,detail:`blocked by ${j.jail}`,node:"this node",at:nowIso,stale:false});
   return rows;
 }

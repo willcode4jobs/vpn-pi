@@ -62,14 +62,18 @@ export function collectLocal(
     for (const ip of j.banned_ips) out.push({ kind: "fail2ban", subject: ip, detail: `blocked by ${j.jail}` });
   }
 
-  // Full per-peer roster (ALL statuses, ok included), built from the live `wg show`
-  // dump so every peer appears every cycle — independent of the daemon's sparse,
-  // transitions-only journal (which cannot enumerate stably-ok peers).
+  // Full per-peer roster (ALL statuses, ok included). Two sources, live wg first:
+  //   1. `wg show` peers — current handshake age. BUT `wg show` needs CAP_NET_ADMIN
+  //      and islandd runs unprivileged, so on a deployed node this list is EMPTY.
+  //   2. the wg-selfheal daemon's journal — the daemon holds CAP_NET_ADMIN and logs
+  //      per-peer status (all states with --snapshot; transitions always), readable
+  //      via systemd-journal membership. On a deployed node it IS the roster.
   const daemonByPeer = new Map(daemon.map((d) => [d.peer, d] as const));
   for (const p of wg.peers) {
     const ip = p.wg0 || p.publicKey.slice(0, 12);
     const name = nameFor(p.wg0); // prefer the human name; keep the IP in detail when we have one
     const d = p.wg0 ? daemonByPeer.get(p.wg0) : undefined;
+    if (p.wg0) daemonByPeer.delete(p.wg0); // covered live — don't emit it twice below
 
     // Base state is the LIVE handshake age (always current, always present). The daemon
     // overlay only ADDS "restored" — its debounced recovery state — and only while the
@@ -82,6 +86,16 @@ export function collectLocal(
     const endpoint = d?.endpoint ? d.endpoint : "";
     const detail = [name ? ip : null, age, endpoint || null].filter(Boolean).join(" — ");
     out.push({ kind: "link", subject: name ?? ip, detail, state });
+  }
+  // Daemon-journal-only peers — the usual case on a deployed node (see above). The
+  // daemon re-emits on every change (ok/restored included), so its latest state IS
+  // the current state; this is what makes the roster live without root.
+  for (const [peer, d] of daemonByPeer) {
+    if (!d.state) continue;
+    const name = nameFor(peer);
+    const age = d.handshakeAge ? (d.handshakeAge === "never" ? "no handshake yet" : `handshake ${d.handshakeAge} ago`) : null;
+    const detail = [name ? peer : null, age, d.endpoint || null].filter(Boolean).join(" — ");
+    out.push({ kind: "link", subject: name ?? peer, detail, state: d.state });
   }
   return out;
 }

@@ -16,7 +16,11 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/wg-selfheal --role=%i --iface=wg0
+# --snapshot: log the full per-peer roster every tick (not just transitions).
+# islandd builds its Security roster by replaying this journal — it cannot read
+# wg directly (needs CAP_NET_ADMIN) — and transitions alone can't enumerate a
+# peer that has been stably ok since the daemon started.
+ExecStart=/usr/local/bin/wg-selfheal --role=%i --iface=wg0 --snapshot
 
 # --- Privilege: ephemeral user, single capability ---
 DynamicUser=yes

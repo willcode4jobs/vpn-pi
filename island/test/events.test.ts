@@ -30,15 +30,40 @@ test("collectLocal emits fail2ban + a full per-peer roster (all statuses, ok inc
   expect(never.detail).toMatch(/no handshake/);
 });
 
-test("collectLocal overlays the daemon's 'restored' onto a live-healthy link", () => {
+test("collectLocal builds the roster from the daemon journal when wg is unreadable", () => {
+  // THE deployed reality: islandd is unprivileged, `wg show` needs CAP_NET_ADMIN, so
+  // wg.peers is EMPTY on every node. The wg-selfheal journal must carry the roster —
+  // keying it off wg.peers alone is the everything-went-blank regression.
+  const ev = collectLocal(
+    [],
+    { iface: "wg0", peers: [] },
+    [
+      { peer: "10.42.0.2", state: "ok", endpoint: "1.2.3.4:51820", handshakeAge: "45s" },
+      { peer: "10.42.0.5", state: "degraded", endpoint: "", handshakeAge: "never" },
+    ],
+    (wg0) => (wg0 === "10.42.0.2" ? "vega" : undefined),
+  );
+  const links = ev.filter((e) => e.kind === "link");
+  expect(links).toHaveLength(2);
+  const vega = links.find((e) => e.subject === "vega")!;
+  expect(vega.state).toBe("ok");
+  expect(vega.detail).toContain("10.42.0.2"); // IP retained in detail when named
+  expect(vega.detail).toContain("45s");
+  const sirius = links.find((e) => e.subject === "10.42.0.5")!;
+  expect(sirius.state).toBe("degraded");
+  expect(sirius.detail).toMatch(/no handshake/);
+});
+
+test("collectLocal overlays the daemon's 'restored' onto a live-healthy link (no duplicate row)", () => {
   const ev = collectLocal(
     [],
     { iface: "wg0", peers: [{ wg0: "10.42.0.5", publicKey: "K", handshakeAgeS: 10, up: true }] },
     [{ peer: "10.42.0.5", state: "restored", endpoint: "203.0.113.9:51820" }],
   );
-  const link = ev.find((e) => e.kind === "link" && e.subject === "10.42.0.5")!;
-  expect(link.state).toBe("restored"); // debounced recovery — age alone can't express this
-  expect(link.detail).toContain("203.0.113.9:51820");
+  const links = ev.filter((e) => e.kind === "link");
+  expect(links).toHaveLength(1); // covered live — the journal entry must not add a second row
+  expect(links[0]!.state).toBe("restored"); // debounced recovery — age alone can't express this
+  expect(links[0]!.detail).toContain("203.0.113.9:51820");
 });
 
 test("collectLocal: a stale daemon 'degraded' never overrides a live-healthy read", () => {

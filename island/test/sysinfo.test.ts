@@ -54,17 +54,32 @@ test("readWg degrades to no peers when wg is unavailable", async () => {
   expect(await readWg("wg0", async () => null)).toEqual({ iface: "wg0", peers: [] });
 });
 
-test("readDaemon replays state transitions → current non-healthy peers", async () => {
+test("readDaemon replays state transitions → full roster (ok KEPT), last wins", async () => {
   const peers = await readDaemon(
     daemonJournal([
       { msg: "starting" }, // ignored — not a state change
       { msg: "state change", peer: "alice…", to: "stale", endpoint: "1.1.1.1:51820" },
-      { msg: "state change", peer: "alice…", to: "degraded", endpoint: "1.1.1.1:51820" }, // last wins
+      { msg: "state change", peer: "alice…", to: "degraded", endpoint: "1.1.1.1:51820", handshake_age: "4m10s" }, // last wins
       { msg: "state change", peer: "bob…", to: "degraded", endpoint: "2.2.2.2:51820" },
-      { msg: "state change", peer: "bob…", to: "ok", endpoint: "2.2.2.2:51820" }, // recovered → drop
+      { msg: "state change", peer: "bob…", to: "ok", endpoint: "2.2.2.2:51820" }, // recovered → KEPT as ok (roster, not alerts)
     ]),
   );
-  expect(peers).toEqual([{ peer: "alice…", state: "degraded", endpoint: "1.1.1.1:51820" }]);
+  expect(peers.find((p) => p.peer === "alice…")).toMatchObject({ state: "degraded", endpoint: "1.1.1.1:51820", handshakeAge: "4m10s" });
+  expect(peers.find((p) => p.peer === "bob…")).toMatchObject({ state: "ok" });
+});
+
+test("readDaemon parses --snapshot 'peer' lines, so stably-ok peers are enumerable", async () => {
+  const peers = await readDaemon(
+    daemonJournal([
+      // a peer that never transitioned still appears via the per-tick snapshot
+      { msg: "peer", peer: "10.42.0.2", status: "ok", endpoint: "1.2.3.4:51820", handshake_age: "45s" },
+      { msg: "peer", peer: "10.42.0.5", status: "degraded", endpoint: "", handshake_age: "never" },
+      // a later transition overrides an earlier snapshot for the same peer
+      { msg: "state change", peer: "10.42.0.5", to: "restored", endpoint: "5.6.7.8:51820" },
+    ]),
+  );
+  expect(peers.find((p) => p.peer === "10.42.0.2")).toMatchObject({ state: "ok", handshakeAge: "45s" });
+  expect(peers.find((p) => p.peer === "10.42.0.5")).toMatchObject({ state: "restored", endpoint: "5.6.7.8:51820" });
 });
 
 test("readDaemon queries the systemd TEMPLATE unit, not the bare name", async () => {
