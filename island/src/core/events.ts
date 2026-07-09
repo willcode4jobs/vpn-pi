@@ -12,7 +12,7 @@ import { canonicalBytes, type Json } from "./canonical.ts";
 import { fromB64, toB64 } from "./codec.ts";
 import type { Identity } from "./identity.ts";
 import { getSodium } from "./sodium.ts";
-import type { DaemonPeer, JailStatus, WgStatus } from "./sysinfo.ts";
+import { classifyLink, type DaemonPeer, type JailStatus, type LinkState, type WgStatus } from "./sysinfo.ts";
 
 export class EventError extends Error {}
 
@@ -20,10 +20,18 @@ export class EventError extends Error {}
 const MAX_REPORT_EVENTS = 200; // a legit snapshot is a handful of events
 const MAX_FEED_NODES = 64; // list() cap — key spam can't grow the admin feed unbounded
 
+// A roster entry's health. Extends the daemon's stateless ladder with "restored",
+// the debounced recovery state the daemon owns (age alone cannot express it).
+export type RosterState = LinkState | "restored";
+
 export interface SecurityEvent {
-  kind: "fail2ban" | "degraded-link" | string;
+  kind: "fail2ban" | "link" | string;
   subject: string; // the ip / peer the event is about
   detail: string;
+  // Present on "link" roster entries: the peer's current health. Absent on fail2ban.
+  // Every peer emits one "link" event every cycle, so the feed carries ALL statuses
+  // (ok included) — not just problems.
+  state?: RosterState | string;
 }
 
 export interface EventReport {
@@ -53,28 +61,41 @@ export function collectLocal(
   for (const j of jails) {
     for (const ip of j.banned_ips) out.push({ kind: "fail2ban", subject: ip, detail: `blocked by ${j.jail}` });
   }
+
+  // Full per-peer roster (ALL statuses, ok included). Two sources, live wg first:
+  //   1. `wg show` peers — current handshake age. BUT `wg show` needs CAP_NET_ADMIN
+  //      and islandd runs unprivileged, so on a deployed node this list is EMPTY.
+  //   2. the wg-selfheal daemon's journal — the daemon holds CAP_NET_ADMIN and logs
+  //      per-peer status (all states with --snapshot; transitions always), readable
+  //      via systemd-journal membership. On a deployed node it IS the roster.
+  const daemonByPeer = new Map(daemon.map((d) => [d.peer, d] as const));
   for (const p of wg.peers) {
-    if (!p.up) {
-      const ip = p.wg0 || p.publicKey.slice(0, 12);
-      const name = nameFor(p.wg0);
-      const stale = p.handshakeAgeS == null ? "no handshake yet" : `stale handshake (${p.handshakeAgeS}s)`;
-      out.push({
-        kind: "degraded-link",
-        subject: name ?? ip, // prefer the human name; keep the IP in detail when we have one
-        detail: name ? `${stale} — ${ip}` : stale,
-      });
-    }
+    const ip = p.wg0 || p.publicKey.slice(0, 12);
+    const name = nameFor(p.wg0); // prefer the human name; keep the IP in detail when we have one
+    const d = p.wg0 ? daemonByPeer.get(p.wg0) : undefined;
+    if (p.wg0) daemonByPeer.delete(p.wg0); // covered live — don't emit it twice below
+
+    // Base state is the LIVE handshake age (always current, always present). The daemon
+    // overlay only ADDS "restored" — its debounced recovery state — and only while the
+    // link currently reads healthy. A stale daemon "degraded"/"stale" transition must
+    // never override a live-healthy read; letting it was the frozen-"degraded" bug.
+    let state: RosterState | string = classifyLink(p.handshakeAgeS);
+    if (d?.state === "restored" && state === "ok") state = "restored";
+
+    const age = p.handshakeAgeS == null ? "no handshake yet" : `${p.handshakeAgeS}s since handshake`;
+    const endpoint = d?.endpoint ? d.endpoint : "";
+    const detail = [name ? ip : null, age, endpoint || null].filter(Boolean).join(" — ");
+    out.push({ kind: "link", subject: name ?? ip, detail, state });
   }
-  // wg-selfheal daemon classifications (richer than raw link state: "degraded" means
-  // the self-heal circuit breaker latched — remediation exhausted).
-  for (const d of daemon) {
-    const name = nameFor(d.peer); // d.peer is the wg0 IP from the daemon's event
-    const state = `${d.state}${d.endpoint ? ` (${d.endpoint})` : ""}`;
-    out.push({
-      kind: "self-heal",
-      subject: name ?? d.peer,
-      detail: name ? `${state} — ${d.peer}` : state,
-    });
+  // Daemon-journal-only peers — the usual case on a deployed node (see above). The
+  // daemon re-emits on every change (ok/restored included), so its latest state IS
+  // the current state; this is what makes the roster live without root.
+  for (const [peer, d] of daemonByPeer) {
+    if (!d.state) continue;
+    const name = nameFor(peer);
+    const age = d.handshakeAge ? (d.handshakeAge === "never" ? "no handshake yet" : `handshake ${d.handshakeAge} ago`) : null;
+    const detail = [name ? peer : null, age, d.endpoint || null].filter(Boolean).join(" — ");
+    out.push({ kind: "link", subject: name ?? peer, detail, state: d.state });
   }
   return out;
 }
@@ -107,6 +128,9 @@ export function parseReport(body: unknown): EventReport {
     if (!e || typeof e !== "object" || typeof e.kind !== "string" || typeof e.subject !== "string" || typeof e.detail !== "string") {
       throw new EventError("malformed report event");
     }
+    // state is optional (roster entries carry it, fail2ban doesn't); reject a non-string
+    // so a malformed field can't reach the store or the feed renderer.
+    if (e.state !== undefined && typeof e.state !== "string") throw new EventError("malformed report event");
   }
   return { node, label, events: events as SecurityEvent[], at, sig };
 }
@@ -134,7 +158,8 @@ export interface NodeEvents {
   node: string;
   label: string;
   events: SecurityEvent[];
-  at: string;
+  at: string; // reporter's clock at push time
+  received: string; // collector arrival time — the feed uses this to detect a stalled reporter
 }
 
 export class EventStore {
@@ -154,9 +179,15 @@ export class EventStore {
   }
   list(): NodeEvents[] {
     const rows = this.db
-      .query(`SELECT node,label,events,at FROM node_events ORDER BY at DESC LIMIT ${MAX_FEED_NODES}`)
-      .all() as { node: string; label: string; events: string; at: string }[];
-    return rows.map((r) => ({ node: r.node, label: r.label, at: r.at, events: JSON.parse(r.events) as SecurityEvent[] }));
+      .query(`SELECT node,label,events,at,received FROM node_events ORDER BY at DESC LIMIT ${MAX_FEED_NODES}`)
+      .all() as { node: string; label: string; events: string; at: string; received: string }[];
+    return rows.map((r) => ({
+      node: r.node,
+      label: r.label,
+      at: r.at,
+      received: r.received,
+      events: JSON.parse(r.events) as SecurityEvent[],
+    }));
   }
 }
 

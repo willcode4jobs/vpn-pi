@@ -131,11 +131,9 @@ export class Gate {
   private _state: GateState = { state: "island", closesAt: null };
   private _log: GateLogEntry[] = [];
   // Spent canary nonce → consumed-at ms (anti-replay). Pruned once unreplayable.
-  // TODO(security): in-memory only — a daemon restart forgets spent nonces, so a
-  // captured canary can be replayed until it ages past the freshness window
-  // (ISLAND_CANARY_FRESHNESS, default 120s). Closing this needs a persistence hook
-  // wired in main.ts (like friends.ts's toJSON/fromJSON + ctx.persist); deferred
-  // rather than reaching into files this module doesn't own.
+  // Persisted across restarts via toJSON()/loadConsumed() + ctx.persist() (wired in
+  // main.ts), so a captured canary can't be replayed by bouncing the daemon inside
+  // the freshness window (ISLAND_CANARY_FRESHNESS, default 120s).
   private consumed = new Map<string, number>();
   private timer: ReturnType<typeof setTimeout> | null = null;
   private lock: Promise<void> = Promise.resolve(); // serializes open/close
@@ -177,6 +175,22 @@ export class Gate {
   }
   log(): GateLogEntry[] {
     return [...this._log];
+  }
+
+  /** Serialize spent-nonce anti-replay state for persistence across restarts.
+   *  (Consumed automatically by JSON.stringify(gate) in ctx.persist.) */
+  toJSON(): { consumed: Array<[string, number]> } {
+    return { consumed: [...this.consumed.entries()] };
+  }
+
+  /** Restore spent nonces persisted by a previous run, so a daemon bounce doesn't
+   *  reopen the replay window. Malformed/aged entries are ignored (open() prunes). */
+  loadConsumed(data: { consumed?: Array<[string, number]> } | null | undefined): void {
+    if (!data?.consumed || !Array.isArray(data.consumed)) return;
+    for (const entry of data.consumed) {
+      const [nonce, at] = entry ?? [];
+      if (typeof nonce === "string" && typeof at === "number") this.consumed.set(nonce, at);
+    }
   }
 
   /** Open egress for a verified canary, if the LLM approves. Idempotent per nonce. */

@@ -41,6 +41,7 @@ import {
   buildShare,
   FileNotFound,
   MemoryFileShare,
+  ShareQuotaExceeded,
   type FileShare,
 } from "./core/share.ts";
 import { getSodium } from "./core/sodium.ts";
@@ -82,8 +83,18 @@ function resolveHost(explicit: string, mock: boolean, wgIface: string): string {
   return "127.0.0.1";
 }
 
+/** Parse a numeric config value, failing loud at boot instead of yielding NaN. A NaN
+ *  port silently fails to bind; a NaN canary-freshness/ttl makes every gate time check
+ *  compare against NaN (always false) — a subtle, hard-to-trace gate failure. */
+function numConfig(raw: string | undefined, name: string, fallback: number): number {
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive number, got: ${JSON.stringify(raw)}`);
+  return n;
+}
+
 function parseArgs(argv: string[]): Args {
-  const args: Args = { mock: false, host: "", port: Number(process.env.ISLAND_PORT ?? 8787) };
+  const args: Args = { mock: false, host: "", port: numConfig(process.env.ISLAND_PORT, "ISLAND_PORT", 8787) };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case "--mock":
@@ -93,7 +104,7 @@ function parseArgs(argv: string[]): Args {
         args.host = argv[++i] ?? "";
         break;
       case "--port":
-        args.port = Number(argv[++i]);
+        args.port = numConfig(argv[++i], "--port", 8787);
         break;
       default:
         throw new Error(`unknown argument: ${argv[i]}`);
@@ -128,6 +139,10 @@ interface Ctx {
   share: FileShare;
   msgs: MessageBook;
   gate: Gate; // the canary-driven internet gate (default island)
+  // Spokes (not the gate node, not an admin app): a read-only pointer to the gate node's
+  // /api/gate so their chip reflects the REAL mesh mode. No admin key, no open ability.
+  gateStatusUrl: string;
+  gateStatusLabel: string;
   adminApp: AdminApp | null; // Option C: this node holds the admin key → can mint + open
   registry: RegistryStore | null; // friend-code directory (polaris; ISLAND_REGISTRY=1)
   registryUrl: string; // where this node announces/resolves codes (ISLAND_REGISTRY_URL)
@@ -181,7 +196,7 @@ async function boot(args: Args): Promise<Ctx> {
   // bind address. ISLAND_WG0 wins; else auto-detect the wg0 interface.
   const wg0 = process.env.ISLAND_WG0 || resolveHost("", args.mock, process.env.ISLAND_WG_IFACE ?? "wg0");
 
-  const peerPort = Number(process.env.ISLAND_PEER_PORT ?? args.port);
+  const peerPort = numConfig(process.env.ISLAND_PEER_PORT, "ISLAND_PEER_PORT", args.port);
   const wgIface = process.env.ISLAND_WG_IFACE ?? "wg0";
 
   // Admin token: env wins; else reuse/auto-generate one in the data dir and print it,
@@ -190,8 +205,20 @@ async function boot(args: Args): Promise<Ctx> {
 
   // ---- canary gate setup (Phase F) ----
   const canaryKeyword = process.env.ISLAND_CANARY_KEYWORD ?? "GREEN18";
-  const canaryFreshnessS = Number(process.env.ISLAND_CANARY_FRESHNESS ?? 120);
-  const gateTtlS = Number(process.env.ISLAND_GATE_TTL ?? 2700); // 45 min
+  const canaryFreshnessS = numConfig(process.env.ISLAND_CANARY_FRESHNESS, "ISLAND_CANARY_FRESHNESS", 120);
+  const gateTtlS = numConfig(process.env.ISLAND_GATE_TTL, "ISLAND_GATE_TTL", 2700); // 45 min
+
+  // Read-only gate-status pointer for a plain spoke (set to the gate node's URL, e.g.
+  // http://10.42.0.2:8787). Leave UNSET on the gate node (vega) and on the admin app.
+  const gateStatusUrl = process.env.ISLAND_GATE_STATUS_URL ?? "";
+  let gateStatusLabel = process.env.ISLAND_GATE_STATUS_LABEL ?? "";
+  if (!gateStatusLabel && gateStatusUrl) {
+    try {
+      gateStatusLabel = new URL(gateStatusUrl).hostname;
+    } catch {
+      gateStatusLabel = gateStatusUrl;
+    }
+  }
 
   // admin allowlist: configured pubkeys in prod; a throwaway admin in --mock so the
   // laptop demo can mint+send a canary without a separate admin app.
@@ -272,17 +299,26 @@ async function boot(args: Args): Promise<Ctx> {
     identity = await loadIdentity(identityDir);
     const bookPath = join(dataDir, "friends.json");
     const msgPath = join(dataDir, "messages.json");
+    const gatePath = join(dataDir, "gate.json"); // spent canary nonces (anti-replay)
     book = existsSync(bookPath)
       ? FriendBook.fromJSON(identity, label, wg0, JSON.parse(await readFile(bookPath, "utf8")))
       : new FriendBook(identity, label, wg0);
     msgs = existsSync(msgPath)
       ? MessageBook.fromJSON(JSON.parse(await readFile(msgPath, "utf8")))
       : new MessageBook();
+    if (existsSync(gatePath)) {
+      try {
+        gate.loadConsumed(JSON.parse(await readFile(gatePath, "utf8")));
+      } catch {
+        // a corrupt spent-nonce file just means we re-earn the (freshness-bounded) window
+      }
+    }
     share = buildShare(); // ISLAND_SHARE = sqlite (vega) | remote (other nodes)
     persist = async () => {
       await mkdir(dataDir, { recursive: true });
       await writeFile(bookPath, JSON.stringify(book));
       await writeFile(msgPath, JSON.stringify(msgs));
+      await writeFile(gatePath, JSON.stringify(gate));
     };
   }
 
@@ -298,6 +334,8 @@ async function boot(args: Args): Promise<Ctx> {
     share,
     msgs,
     gate,
+    gateStatusUrl,
+    gateStatusLabel,
     adminApp,
     registry,
     registryUrl: process.env.ISLAND_REGISTRY_URL ?? "",
@@ -401,24 +439,30 @@ async function deliver(wg0: string, port: number, path: string, body: unknown): 
 async function gateView(
   ctx: Ctx,
 ): Promise<{ state: string; closesAt: string | null; target: string | null; targetLabel: string | null; reachable: boolean }> {
+  // Where does the real gate live, from this node's perspective? An admin app (builder)
+  // points at the gate node it controls; a plain spoke points at it read-only via
+  // ISLAND_GATE_STATUS_URL. Either way, show the TARGET's gate, not this node's empty
+  // local one. The gate node itself has neither set → returns its real local state.
   const aa = ctx.adminApp;
-  if (!aa?.target) {
+  const source = aa?.target || ctx.gateStatusUrl;
+  const label = (aa?.target ? aa.targetLabel : ctx.gateStatusLabel) || null;
+  if (!source) {
     const gs = ctx.gate.state();
     return { state: gs.state, closesAt: gs.closesAt, target: null, targetLabel: null, reachable: true };
   }
   try {
-    const r = await fetch(`${aa.target}/api/gate`, { signal: AbortSignal.timeout(5_000) });
+    const r = await fetch(`${source}/api/gate`, { signal: AbortSignal.timeout(5_000) });
     const j = (await r.json()) as { state?: string; closes_at?: string | null };
     return {
       state: j.state ?? "unknown",
       closesAt: j.closes_at ?? null,
-      target: aa.target,
-      targetLabel: aa.targetLabel,
+      target: source,
+      targetLabel: label,
       reachable: true,
     };
   } catch {
     // Target unreachable: report island (fail-safe — never claim the gate is open) + reachable:false.
-    return { state: "island", closesAt: null, target: aa.target, targetLabel: aa.targetLabel, reachable: false };
+    return { state: "island", closesAt: null, target: source, targetLabel: label, reachable: false };
   }
 }
 
@@ -550,13 +594,15 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
   }
   // Delete (revoke) a friendship. There is deliberately NO POST/create — admin can
   // delete but never forge (a friendship only exists via the verified handshake).
+  // Mutual like the operator route: the peer gets a signed revoke notice, best-effort.
   const adminDel = path.match(/^\/admin\/friends\/(.+)$/);
   if (method === "DELETE" && adminDel) {
     requireAdmin(req, server, ctx);
-    const removed = ctx.book.revoke(decodeURIComponent(adminDel[1]!));
-    if (!removed) return new Response("no such friend", { status: 404 });
+    const r = await ctx.book.issueRevoke(decodeURIComponent(adminDel[1]!));
+    if (!r) return new Response("no such friend", { status: 404 });
     await ctx.persist();
-    return new Response(null, { status: 204 });
+    const delivered = r.wg0 ? await deliver(r.wg0, ctx.peerPort, "/api/friends/revoke-inbound", { notice: r.notice }) : false;
+    return Response.json({ ok: true, peer_notified: delivered });
   }
 
   // ---- first-run admin token reveal ----
@@ -588,6 +634,7 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
       ctx.canaryFreshnessS,
     );
     const result = await ctx.gate.open(canary);
+    await ctx.persist(); // the nonce is now spent (even on deny) — save it so a restart can't replay it
     return Response.json({
       opened: result.opened,
       reason: result.reason,
@@ -643,7 +690,9 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
     }
     const body = await readJson(req);
     // The admin never types the keyword; we prefix it (it must be the canary's first token).
-    const reason = String(body.text ?? "").trim() || "open the internet";
+    // A reason IS required — it's the intent Llama evaluates; no silent default open.
+    const reason = String(body.text ?? "").trim();
+    if (reason.length < 3) throw new FriendError("a reason is required to open the gate — Llama evaluates it");
     const text = `${ctx.canaryKeyword} ${reason}`;
     const blob = await makeCanary(aa.identity, ctx.canaryKeyword, text, aa.targetX25519);
     const r = await fetch(`${aa.target}/admin/canary`, {
@@ -752,14 +801,26 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
       wg0: ctx.wg0,
     });
   }
-  // Remove one of your own friendships (one-sided revoke). Operator action.
+  // Remove one of your own friendships — MUTUAL: revoke locally, then send the peer
+  // a signed revoke notice so their side drops us too. Delivery is best-effort (the
+  // peer may be offline); the local removal stands either way, and `peer_notified`
+  // tells the operator whether the other side actually heard.
   const friendDel = path.match(/^\/api\/friends\/(.+)$/);
   if (method === "DELETE" && friendDel) {
     requireOperator(req, server, ctx);
-    const removed = ctx.book.revoke(decodeURIComponent(friendDel[1]!));
-    if (!removed) return new Response("no such friend", { status: 404 });
+    const r = await ctx.book.issueRevoke(decodeURIComponent(friendDel[1]!));
+    if (!r) return new Response("no such friend", { status: 404 });
     await ctx.persist();
-    return new Response(null, { status: 204 });
+    const delivered = r.wg0 ? await deliver(r.wg0, ctx.peerPort, "/api/friends/revoke-inbound", { notice: r.notice }) : false;
+    return Response.json({ ok: true, peer_notified: delivered });
+  }
+  // Inbound (from a peer, crypto-gated): a revoke notice. receiveRevoke verifies the
+  // signature against the STORED friend key — destroy-only, a non-friend can't use it.
+  if (method === "POST" && path === "/api/friends/revoke-inbound") {
+    const body = await readJson(req);
+    const removed = await ctx.book.receiveRevoke(body.notice as never);
+    await ctx.persist();
+    return Response.json({ ok: true, removed: removed.peer.label });
   }
 
   // ---- messaging (Phase D) — direct P2P, sealed ----
@@ -850,6 +911,7 @@ async function route(req: Request, server: Server<undefined>, ctx: Ctx): Promise
 
 function errorStatus(err: unknown): number {
   if (err instanceof PayloadTooLarge) return 413;
+  if (err instanceof ShareQuotaExceeded) return 507; // share disk quota exhausted
   if (err instanceof RateLimited) return 429;
   if (err instanceof FileNotFound) return 404;
   if (err instanceof Forbidden) return 403;

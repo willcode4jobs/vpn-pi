@@ -9,28 +9,75 @@ import {
 } from "../src/core/events.ts";
 import { generateIdentity } from "../src/core/identity.ts";
 
-test("collectLocal turns fail2ban + degraded links into events", () => {
+test("collectLocal emits fail2ban + a full per-peer roster (all statuses, ok included)", () => {
   const ev = collectLocal(
     [{ jail: "sshd", currently_banned: 1, total_banned: 3, banned_ips: ["1.2.3.4"] }],
     { iface: "wg0", peers: [
-      { wg0: "10.42.0.5", publicKey: "K", handshakeAgeS: 30, up: true },   // healthy → no event
-      { wg0: "10.42.0.6", publicKey: "K2", handshakeAgeS: 600, up: false }, // stale → event
-      { wg0: "10.42.0.7", publicKey: "K3", handshakeAgeS: null, up: false },// never → event
+      { wg0: "10.42.0.5", publicKey: "K", handshakeAgeS: 30, up: true },    // < 150s → ok
+      { wg0: "10.42.0.6", publicKey: "K2", handshakeAgeS: 160, up: true },  // 150–180s → stale
+      { wg0: "10.42.0.7", publicKey: "K3", handshakeAgeS: 600, up: false }, // ≥ 180s → degraded
+      { wg0: "10.42.0.8", publicKey: "K4", handshakeAgeS: null, up: false },// never → degraded
     ] },
   );
   expect(ev).toContainEqual({ kind: "fail2ban", subject: "1.2.3.4", detail: "blocked by sshd" });
-  expect(ev.filter((e) => e.kind === "degraded-link")).toHaveLength(2);
-  expect(ev.find((e) => e.subject === "10.42.0.7")!.detail).toMatch(/no handshake/);
+  const links = ev.filter((e) => e.kind === "link");
+  expect(links).toHaveLength(4); // EVERY peer present — a healthy peer is no longer dropped
+  expect(links.find((e) => e.subject === "10.42.0.5")!.state).toBe("ok");
+  expect(links.find((e) => e.subject === "10.42.0.6")!.state).toBe("stale");
+  expect(links.find((e) => e.subject === "10.42.0.7")!.state).toBe("degraded");
+  const never = links.find((e) => e.subject === "10.42.0.8")!;
+  expect(never.state).toBe("degraded");
+  expect(never.detail).toMatch(/no handshake/);
 });
 
-test("collectLocal includes wg-selfheal daemon events", () => {
-  const ev = collectLocal([], { iface: "wg0", peers: [] }, [
-    { peer: "sirius…", state: "degraded", endpoint: "203.0.113.9:51820" },
-  ]);
-  expect(ev).toContainEqual({ kind: "self-heal", subject: "sirius…", detail: "degraded (203.0.113.9:51820)" });
+test("collectLocal builds the roster from the daemon journal when wg is unreadable", () => {
+  // THE deployed reality: islandd is unprivileged, `wg show` needs CAP_NET_ADMIN, so
+  // wg.peers is EMPTY on every node. The wg-selfheal journal must carry the roster —
+  // keying it off wg.peers alone is the everything-went-blank regression.
+  const ev = collectLocal(
+    [],
+    { iface: "wg0", peers: [] },
+    [
+      { peer: "10.42.0.2", state: "ok", endpoint: "1.2.3.4:51820", handshakeAge: "45s" },
+      { peer: "10.42.0.5", state: "degraded", endpoint: "", handshakeAge: "never" },
+    ],
+    (wg0) => (wg0 === "10.42.0.2" ? "vega" : undefined),
+  );
+  const links = ev.filter((e) => e.kind === "link");
+  expect(links).toHaveLength(2);
+  const vega = links.find((e) => e.subject === "vega")!;
+  expect(vega.state).toBe("ok");
+  expect(vega.detail).toContain("10.42.0.2"); // IP retained in detail when named
+  expect(vega.detail).toContain("45s");
+  const sirius = links.find((e) => e.subject === "10.42.0.5")!;
+  expect(sirius.state).toBe("degraded");
+  expect(sirius.detail).toMatch(/no handshake/);
 });
 
-test("collectLocal resolves wg0 IPs to friend names (self-heal + degraded-link)", () => {
+test("collectLocal overlays the daemon's 'restored' onto a live-healthy link (no duplicate row)", () => {
+  const ev = collectLocal(
+    [],
+    { iface: "wg0", peers: [{ wg0: "10.42.0.5", publicKey: "K", handshakeAgeS: 10, up: true }] },
+    [{ peer: "10.42.0.5", state: "restored", endpoint: "203.0.113.9:51820" }],
+  );
+  const links = ev.filter((e) => e.kind === "link");
+  expect(links).toHaveLength(1); // covered live — the journal entry must not add a second row
+  expect(links[0]!.state).toBe("restored"); // debounced recovery — age alone can't express this
+  expect(links[0]!.detail).toContain("203.0.113.9:51820");
+});
+
+test("collectLocal: a stale daemon 'degraded' never overrides a live-healthy read", () => {
+  // This is the frozen-"degraded" bug: a peer that handshaked 10s ago is healthy NOW,
+  // even if the daemon's last (stale) transition said degraded. Live wins.
+  const ev = collectLocal(
+    [],
+    { iface: "wg0", peers: [{ wg0: "10.42.0.5", publicKey: "K", handshakeAgeS: 10, up: true }] },
+    [{ peer: "10.42.0.5", state: "degraded", endpoint: "" }],
+  );
+  expect(ev.find((e) => e.kind === "link")!.state).toBe("ok");
+});
+
+test("collectLocal resolves wg0 IPs to friend names (IP retained in detail)", () => {
   const nameFor = (wg0: string) => (wg0 === "10.42.0.5" ? "sirius" : undefined);
   const ev = collectLocal(
     [],
@@ -38,12 +85,11 @@ test("collectLocal resolves wg0 IPs to friend names (self-heal + degraded-link)"
     [{ peer: "10.42.0.5", state: "degraded", endpoint: "203.0.113.9:51820" }],
     nameFor,
   );
-  // named: subject is the label, IP retained in detail
-  expect(ev).toContainEqual({ kind: "self-heal", subject: "sirius", detail: "degraded (203.0.113.9:51820) — 10.42.0.5" });
-  expect(ev.find((e) => e.kind === "degraded-link")!).toMatchObject({ subject: "sirius" });
-  // unknown IP falls through to the IP unchanged
-  const ev2 = collectLocal([], { iface: "wg0", peers: [] }, [{ peer: "10.42.0.9", state: "stale", endpoint: "" }], nameFor);
-  expect(ev2).toContainEqual({ kind: "self-heal", subject: "10.42.0.9", detail: "stale" });
+  const link = ev.find((e) => e.kind === "link")!;
+  expect(link.subject).toBe("sirius"); // named: subject is the label
+  expect(link.state).toBe("degraded");
+  expect(link.detail).toContain("10.42.0.5"); // IP retained in detail
+  expect(link.detail).toContain("203.0.113.9:51820");
 });
 
 test("a report verifies; tampering or a foreign signer does not", async () => {

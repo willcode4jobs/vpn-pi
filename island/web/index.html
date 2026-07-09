@@ -181,13 +181,20 @@ async function Home(v){
       <div class="hsub">${d.gate.reachable===false?`The gate node${gtag} is unreachable.`:(on?("The gate is open"+(d.gate.closes_at?` · recloses ${new Date(d.gate.closes_at).toLocaleTimeString()}`:"")):"A private network for you and your friends — no internet, by default.")}</div>`;
     c.querySelector("#b").outerHTML=`<div id="b">
       <h3>Connectivity (${esc(d.wg.iface)})</h3>
-      ${d.wg.peers.map(p=>`<div class="row"><div class="avatar">${initial(p.label||p.wg0)}</div><div class="grow"><div class="name">${esc(p.label||"unknown")}</div><div class="meta">${esc(p.wg0)}</div></div><span class="${p.up?"up":"down"}">${p.up?"online":"offline"}</span></div>`).join("")||`<div class="empty">No peers</div>`}
+      ${(()=>{
+        const live=d.wg.peers.map(p=>`<div class="row"><div class="avatar">${initial(p.label||p.wg0)}</div><div class="grow"><div class="name">${esc(p.label||"unknown")}</div><div class="meta">${esc(p.wg0)}</div></div><span class="${p.up?"up":"down"}">${p.up?"online":"offline"}</span></div>`);
+        // `wg show` needs CAP_NET_ADMIN and islandd runs unprivileged, so the live list is
+        // empty on a deployed node — fall back to the wg-selfheal journal roster.
+        const jr=live.length?[]:(d.selfheal||[]).filter(s=>s.state&&s.state!=="gone").map(s=>{const on=s.state==="ok"||s.state==="restored";return `<div class="row"><div class="avatar">${initial(s.peer)}</div><div class="grow"><div class="name">${esc(s.peer)}</div><div class="meta">${esc(s.state)}${s.endpoint?` · ${esc(s.endpoint)}`:""}</div></div><span class="${on?"up":"down"}">${on?"online":"offline"}</span></div>`});
+        return [...live,...jr].join("")||`<div class="empty">No peers</div>`;
+      })()}
       <h3>Friend requests${d.requests.length?` (${d.requests.length})`:""}</h3>
       ${d.requests.map(r=>`<div class="row"><div class="avatar">${initial(r.from_label)}</div><div class="grow"><div class="name">${esc(r.from_label)}</div><div class="meta">wants to connect</div></div></div>`).join("")||`<div class="empty">None — accept invites under Friends</div>`}
       <h3>Security</h3>
       ${(()=>{
         const blocks=d.fail2ban.filter(j=>j.currently_banned>0).map(j=>`<div class="row"><div class="avatar">${ICONS.block}</div><div class="grow"><div class="name">${esc(j.jail)} <span class="meta">· blocked</span></div><div class="meta">${j.currently_banned} IP${j.currently_banned>1?"s":""} banned</div></div></div>`);
-        const heal=(d.selfheal||[]).map(s=>`<div class="row"><div class="avatar">${ICONS.alert}</div><div class="grow"><div class="name">${esc(s.peer)} <span class="meta">· self-heal</span></div><div class="meta">${esc(s.state)}${s.endpoint?` (${esc(s.endpoint)})`:""}</div></div></div>`);
+        // selfheal is now the FULL roster (ok included) — this panel only surfaces problems
+        const heal=(d.selfheal||[]).filter(s=>s.state&&s.state!=="ok").map(s=>`<div class="row"><div class="avatar">${ICONS.alert}</div><div class="grow"><div class="name">${esc(s.peer)} <span class="meta">· self-heal</span></div><div class="meta">${esc(s.state)}${s.endpoint?` (${esc(s.endpoint)})`:""}</div></div></div>`);
         const rows=[...blocks,...heal];
         return rows.length?rows.join(""):`<div class="empty">All clear — no blocks or degraded links</div>`;
       })()}
@@ -217,7 +224,7 @@ async function Friends(v){
     list.querySelector("#l").outerHTML=`<div id="l">${meRow}${friendRows||`<div class="empty">No friends yet — add one below</div>`}</div>`;
     list.querySelectorAll("[data-view]").forEach(b=>b.onclick=()=>{const kb=list.querySelector("#kb"+b.dataset.view);kb.style.display=kb.style.display==="none"?"":"none";});
     list.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(b.dataset.copy));
-    list.querySelectorAll("[data-rm]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friend? They can no longer write to this node."))return;try{await api("/api/friends/"+encodeURIComponent(b.dataset.rm),{method:"DELETE"});snack("Friend removed");render();}catch(e){snack(e.message,true);}});
+    list.querySelectorAll("[data-rm]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friend? The friendship is removed on both nodes."))return;try{const r=await api("/api/friends/"+encodeURIComponent(b.dataset.rm),{method:"DELETE"});snack(r&&r.peer_notified?"Friend removed on both sides":"Removed here — peer unreachable, their side still lists you");render();}catch(e){snack(e.message,true);}});
   }catch(e){snack(e.message,true);}
   if(gen!==renderGen)return; // don't append the cards below into a newer view
 
@@ -341,33 +348,85 @@ async function Admin(v){
     fr.querySelector("#frdone").onclick=()=>{firstRunToken=null;render();};
   }
   const gc=el(`<div class="card"><h2>Internet access <span id="gnode" class="meta"></span></h2><p class="sub">The island is sealed by default. Click <b>Open gate</b> to request internet egress — your admin key (held on this machine) signs the request and Llama approves it. (To <i>unlock</i> admin itself, use the lock in the top bar.)</p>
-    <label class="f"><span>Reason <span class="meta">(optional)</span></span><input id="canary" placeholder="open the internet" autocomplete="off"></label>
+    <label class="f"><span>Reason <span class="meta">(required — Llama reads this)</span></span><input id="canary" placeholder="why you need internet, e.g. download package updates" autocomplete="off" required></label>
     <div class="row" style="border:0"><span class="chip island" id="gs"><span class="dot"></span>…</span><span class="grow"></span><button class="btn filled" id="open">Open gate</button><button class="btn text" id="close">Close</button></div>
     <div id="log" class="sub" style="margin-top:.75rem"></div></div>`);v.append(gc);
   const gstat=async()=>{try{const g=await api("/api/gate");const on=g.state==="internet";const c=gc.querySelector("#gs");const node=gc.querySelector("#gnode");if(node)node.textContent=g.target_label?`· ${g.target_label}`:"";if(g.reachable===false){c.className="chip island";c.innerHTML=`<span class="dot"></span>Unreachable`;return;}c.className="chip "+(on?"internet":"island");c.innerHTML=`<span class="dot"></span>${on?"Internet":"Island"}${on&&g.closes_at?` · ${new Date(g.closes_at).toLocaleTimeString()}`:""}`;}catch{}};
   const glog=async()=>{try{const l=await api("/admin/gate/log");gc.querySelector("#log").innerHTML=l.log.slice(-5).reverse().map(e=>`${new Date(e.at).toLocaleTimeString()} · <b>${esc(e.action)}</b> ${esc(e.reason||"")}`).join("<br>");}catch{}};
   gstat();glog();
-  gc.querySelector("#open").onclick=async(ev)=>{const btn=ev.currentTarget;if(btn.disabled)return;const text=gc.querySelector("#canary").value.trim();btn.disabled=true;try{const r=await api("/api/gate/open",{json:text?{text}:{}});snack(r.opened?"Gate opened":"Denied: "+(r.reason||""),!r.opened);gstat();glog();refreshGate();}catch(e){snack(/not an admin app/.test(e.message)?"This node can't open the gate — use the admin app (the machine holding the admin key)":("Open failed: "+e.message),true);}finally{btn.disabled=false;}};
+  gc.querySelector("#open").onclick=async(ev)=>{const btn=ev.currentTarget;if(btn.disabled)return;const inp=gc.querySelector("#canary");const text=inp.value.trim();if(text.length<3){snack("Type a reason — Llama needs to know why to open the gate",true);inp.focus();return;}btn.disabled=true;try{const r=await api("/api/gate/open",{json:{text}});snack(r.opened?"Gate opened":"Denied: "+(r.reason||""),!r.opened);gstat();glog();refreshGate();}catch(e){snack(/not an admin app/.test(e.message)?"This node can't open the gate — use the admin app (the machine holding the admin key)":("Open failed: "+e.message),true);}finally{btn.disabled=false;}};
   gc.querySelector("#close").onclick=async()=>{try{await api("/admin/gate/close",{method:"POST"});snack("Gate closed");gstat();glog();refreshGate();}catch(e){snack(e.message,true);}};
 
   const fc=el(`<div class="card"><h2>Manage friendships</h2><p class="sub">Remove a friendship.</p><div id="l" class="empty">Loading…</div></div>`);v.append(fc);
   try{const d=await api("/admin/friends");
     fc.querySelector("#l").outerHTML=`<div id="l">${d.friends.map(f=>`<div class="row"><div class="avatar">${initial(f.peer.label)}</div><div class="grow"><div class="name">${esc(f.peer.label)}</div><div class="meta key" data-copy="${esc(f.peer.ed25519)}" title="click to copy full key">${esc(f.peer.ed25519.slice(0,24))}…</div></div><button class="btn danger sm" data-del="${esc(f.peer.ed25519)}">Remove</button></div>`).join("")||`<div class="empty">No friendships</div>`}</div>`;
     fc.querySelectorAll("[data-copy]").forEach(b=>b.onclick=()=>copy(b.dataset.copy));
-    fc.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friendship?"))return;try{await api("/admin/friends/"+encodeURIComponent(b.dataset.del),{method:"DELETE"});render();}catch(e){snack(e.message,true);}});
+    fc.querySelectorAll("[data-del]").forEach(b=>b.onclick=async()=>{if(!confirm("Remove this friendship? It is removed on both nodes."))return;try{const r=await api("/admin/friends/"+encodeURIComponent(b.dataset.del),{method:"DELETE"});snack(r&&r.peer_notified?"Friendship removed on both sides":"Removed here — peer unreachable, their side still lists this node");render();}catch(e){snack(e.message,true);}});
   }catch(e){fc.querySelector("#l").innerHTML=`<div class="empty">${esc(e.message)}</div>`;}
 }
 
 // ---------- Security (admin-only, collector node only): the mesh IDS feed ----------
+// Renders a full per-peer roster (every link's status, ok included) plus fail2ban blocks.
+// Two sources: THIS node's live roster (from /api/home — its own wg + wg-selfheal journal,
+// always available, no report round-trip) merged with the cross-node report store
+// (/admin/events). The local rows are why the tab is never empty just because remote
+// reports haven't landed — the journal is read directly here.
+const SEC_PILL={ok:"#1a7f37",restored:"#1a7f37",stale:"#9a6700",degraded:"#cf222e",gone:"#57606a"}; // status → colour
+const SEC_SEV={degraded:0,gone:1,stale:2,restored:3,ok:4};                                          // worst first
+const SEC_STALE_S=150,SEC_DEGR_S=180; // link ladder — MUST match daemon/sysinfo (classifyLink)
+// Peers hard-ignored in the feed regardless of what any node reports. 10.42.0.6 is a
+// node that may or may not return; suppress it here so it never clutters the roster.
+const SEC_IGNORE=["10.42.0.6"];
+const SEC_STALE_MS=180000; // no report in 3× the 60s push interval ⇒ reporter is stalled
+function secIgnored(e){const hay=`${e.subject} ${e.detail}`;return SEC_IGNORE.some(ip=>hay.includes(ip));}
+function secRank(e){return e.kind==="fail2ban"?0:(SEC_SEV[e.state]??2);}
+function secClassify(a){return a==null||a>=SEC_DEGR_S?"degraded":a>=SEC_STALE_S?"stale":"ok";}
+// Build this node's roster straight from /api/home. Two sources: live wg peers first,
+// then wg-selfheal journal peers the live read didn't cover. On a deployed node the
+// live list is EMPTY (`wg show` needs CAP_NET_ADMIN; islandd is unprivileged), so the
+// daemon's journal — which islandd CAN read — is the usual roster source.
+function secLocalRows(home,nowIso){
+  if(!home)return [];
+  const dmap=new Map((home.selfheal||[]).map(s=>[s.peer,s]));
+  const rows=((home.wg&&home.wg.peers)||[]).map(p=>{
+    const ip=p.wg0||"?",d=dmap.get(p.wg0);dmap.delete(p.wg0);
+    let state=secClassify(p.handshake_age_s);
+    if(d&&d.state==="restored"&&state==="ok")state="restored"; // daemon adds the debounced recovery
+    const age=p.handshake_age_s==null?"no handshake yet":`${p.handshake_age_s}s since handshake`;
+    const detail=[p.label?ip:null,age,(d&&d.endpoint)||null].filter(Boolean).join(" — ");
+    return {kind:"link",subject:p.label||ip,detail,state,node:"this node",at:nowIso,stale:false};
+  });
+  for(const [peer,s] of dmap){
+    if(!s.state)continue;
+    const age=s.handshakeAge?(s.handshakeAge==="never"?"no handshake yet":`handshake ${s.handshakeAge} ago`):null;
+    rows.push({kind:"link",subject:peer,detail:[age,s.endpoint||null].filter(Boolean).join(" — "),state:s.state,node:"this node",at:nowIso,stale:false});
+  }
+  for(const j of (home.fail2ban||[]))for(const ip of (j.banned_ips||[]))rows.push({kind:"fail2ban",subject:ip,detail:`blocked by ${j.jail}`,node:"this node",at:nowIso,stale:false});
+  return rows;
+}
 async function Security(v){
   const gen=renderGen;
-  const c=el(`<div class="card"><h2>Security</h2><p class="sub">fail2ban blocks and degraded links across every node.</p><div id="b" class="empty">Loading…</div></div>`);v.append(c);
+  const c=el(`<div class="card"><h2>Security</h2><p class="sub">Every peer's link status across the mesh, plus fail2ban blocks.</p><div id="b" class="empty">Loading…</div></div>`);v.append(c);
   try{
-    const d=await api("/admin/events");
+    // Local roster (/api/home) is always available; remote reports (/admin/events) fill in the
+    // rest of the mesh. Either may be empty; render whatever we have.
+    const [d,home]=await Promise.all([api("/admin/events").catch(()=>({nodes:[]})),api("/api/home").catch(()=>null)]);
     if(gen!==renderGen)return; // a newer render wiped the view while we were loading
-    const rows=d.nodes.flatMap(n=>n.events.map(e=>({...e,node:n.label,at:n.at})));
-    rows.sort((a,b)=>b.at.localeCompare(a.at));
-    c.querySelector("#b").outerHTML=`<div id="b">${rows.length?rows.map(e=>`<div class="row"><div class="avatar">${e.kind==="fail2ban"?ICONS.block:ICONS.alert}</div><div class="grow"><div class="name">${esc(e.subject)} <span class="meta">· ${esc(e.kind)}</span></div><div class="meta">${esc(e.detail)} — on ${esc(e.node)} · ${new Date(e.at).toLocaleString()}</div></div></div>`).join(""):`<div class="empty">No events reported yet</div>`}</div>`;
+    const now=Date.now(),nowIso=new Date(now).toISOString();
+    const remote=(d.nodes||[]).flatMap(n=>{
+      const stale=n.received?now-new Date(n.received).getTime()>SEC_STALE_MS:false;
+      return (n.events||[]).map(e=>({...e,node:n.label,at:n.at,stale}));
+    });
+    const rows=[...secLocalRows(home,nowIso),...remote].filter(e=>!secIgnored(e));
+    // Worst status first, then most-recent report; a stalled node's rows sink to the bottom.
+    rows.sort((a,b)=>(a.stale-b.stale)||(secRank(a)-secRank(b))||b.at.localeCompare(a.at));
+    c.querySelector("#b").outerHTML=`<div id="b">${rows.length?rows.map(e=>{
+      const healthy=e.state==="ok"||e.state==="restored";
+      const av=e.kind==="fail2ban"?ICONS.block:healthy?`<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${SEC_PILL[e.state]}"></span>`:ICONS.alert;
+      const pill=e.state?` <span style="font-size:11px;padding:1px 7px;border-radius:9px;color:#fff;background:${SEC_PILL[e.state]||"#57606a"}">${esc(e.state)}</span>`:"";
+      const staleTag=e.stale?` <span class="meta" style="color:#9a6700">· no report in ${Math.round((now-new Date(e.at).getTime())/60000)}m</span>`:"";
+      return `<div class="row"${e.stale?' style="opacity:.55"':""}><div class="avatar">${av}</div><div class="grow"><div class="name">${esc(e.subject)}${pill} <span class="meta">· ${esc(e.kind)}</span></div><div class="meta">${esc(e.detail)} — on ${esc(e.node)} · ${new Date(e.at).toLocaleString()}${staleTag}</div></div></div>`;
+    }).join(""):`<div class="empty">No nodes reporting yet</div>`}</div>`;
   }catch(e){snack(e.message,true);}
 }
 

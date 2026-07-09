@@ -70,3 +70,24 @@ test("egress auto-recloses after the TTL", async () => {
   expect(gate.state().state).toBe("island");
   expect(exec.closes).toBe(1);
 });
+
+test("spent nonces survive a restart via toJSON/loadConsumed (no replay)", async () => {
+  const first = new Gate(new MockLlama(), new NoopGateExec(), 2700);
+  const now = new Date("2026-06-17T00:00:00Z");
+  await first.open(canary("persisted-nonce"), now);
+
+  // Simulate a daemon restart: serialize, then restore into a fresh Gate.
+  const snapshot = JSON.parse(JSON.stringify(first));
+  const restored = new Gate(new MockLlama(), new NoopGateExec(), 2700);
+  restored.loadConsumed(snapshot);
+
+  // Replaying the same canary after the "restart" is rejected.
+  expect(restored.open(canary("persisted-nonce"), now)).rejects.toThrow(CanaryError);
+});
+
+test("loadConsumed ignores malformed persisted data", () => {
+  const gate = new Gate(new MockLlama(), new NoopGateExec(), 2700);
+  expect(() => gate.loadConsumed(null)).not.toThrow();
+  expect(() => gate.loadConsumed({})).not.toThrow();
+  expect(() => gate.loadConsumed({ consumed: [["ok", 1], ["bad" as unknown as string, "x" as unknown as number]] })).not.toThrow();
+});

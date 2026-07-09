@@ -123,6 +123,27 @@ export async function readWg(
   return { iface, peers };
 }
 
+// --- link health ladder (shared with the wg-selfheal daemon) ----------------
+//
+// The daemon classifies peers by handshake age on the SAME boundaries (see
+// daemon/internal/heal/types.go DefaultConfig: StaleAfter=150s / DegradedAfter=180s).
+// Keep these in lockstep with that ladder so the app's per-peer roster and the
+// daemon's self-heal feed agree on where a link crosses from ok → stale → degraded.
+// Both sit above WireGuard's ~135s rekey envelope so a healthy idle peer isn't misread.
+export const STALE_AFTER_S = 150;
+export const DEGRADED_AFTER_S = 180;
+
+export type LinkState = "ok" | "stale" | "degraded";
+
+/** Classify a peer's link by handshake age alone (null = never handshaked → degraded).
+ *  This is the stateless base state for the roster; the daemon adds the debounced
+ *  "restored" nuance on top (which age alone cannot express). */
+export function classifyLink(handshakeAgeS: number | null): LinkState {
+  if (handshakeAgeS == null || handshakeAgeS >= DEGRADED_AFTER_S) return "degraded";
+  if (handshakeAgeS >= STALE_AFTER_S) return "stale";
+  return "ok";
+}
+
 // --- synthetic data for --mock (laptop demo, no mesh) -----------------------
 
 export function mockFail2ban(): JailStatus[] {
@@ -141,15 +162,21 @@ export function mockWg(iface = "wg0"): WgStatus {
 
 // --- wg-selfheal daemon: current per-peer health from its journald events ----
 //
-// The Go daemon logs JSON state-transition events (ok/stale/degraded) to journald.
-// We replay them (last transition per peer wins → current state) and surface the
-// peers that are not healthy, exactly like the fail2ban Ban/Unban replay. No socket,
-// no privilege beyond systemd-journal. Degrades to [] if the daemon isn't running.
+// The Go daemon logs JSON events to journald and we replay them (last entry per
+// peer wins → current state), exactly like the fail2ban Ban/Unban replay. Two shapes:
+//   - "state change" transitions (always on): peer, to, endpoint, handshake_age
+//   - "peer" snapshots (--snapshot flag): peer, status, endpoint, handshake_age —
+//     one line per peer per tick, so stably-ok peers are enumerable too
+// This journal is the ROSTER SOURCE on a deployed node: islandd runs unprivileged
+// and `wg show` needs CAP_NET_ADMIN (readWg comes back empty), while the daemon
+// holds that capability and its journal needs only systemd-journal membership.
+// ALL states are kept, ok included. Degrades to [] if the daemon isn't running.
 
 export interface DaemonPeer {
-  peer: string; // the daemon's (short) peer key
-  state: "stale" | "degraded" | string;
+  peer: string; // the peer's wg0 IP (the daemon's label; a short key on odd configs)
+  state: "ok" | "stale" | "degraded" | "restored" | "gone" | string;
   endpoint: string;
+  handshakeAge?: string; // daemon-rendered age ("45s" / "never") — display only
 }
 
 // The daemon is a systemd TEMPLATE unit — wg-selfheal@spoke / wg-selfheal@relay — so
@@ -165,22 +192,27 @@ export async function readDaemon(run: Runner = runCmd): Promise<DaemonPeer[]> {
   const out = await run(DAEMON_ARGV);
   if (!out) return [];
 
-  const latest = new Map<string, { state: string; endpoint: string }>();
+  const latest = new Map<string, { state: string; endpoint: string; handshakeAge?: string }>();
   for (const line of out.split("\n")) {
     if (!line.trim()) continue;
-    let evt: { msg?: string; peer?: string; to?: string; endpoint?: string };
+    let evt: { msg?: string; peer?: string; to?: string; status?: string; endpoint?: string; handshake_age?: string };
     try {
       evt = JSON.parse(String(JSON.parse(line).MESSAGE ?? "")); // journald MESSAGE is the daemon's JSON line
     } catch {
       continue;
     }
-    if (evt.msg !== "state change" || !evt.peer) continue;
-    latest.set(evt.peer, { state: String(evt.to ?? ""), endpoint: String(evt.endpoint ?? "") });
+    if (!evt.peer) continue;
+    // transitions carry the new state in "to"; --snapshot roster lines carry "status"
+    const state = evt.msg === "state change" ? evt.to : evt.msg === "peer" ? evt.status : undefined;
+    if (!state) continue;
+    latest.set(evt.peer, {
+      state: String(state),
+      endpoint: String(evt.endpoint ?? ""),
+      handshakeAge: evt.handshake_age ? String(evt.handshake_age) : undefined,
+    });
   }
 
-  return [...latest]
-    .filter(([, v]) => v.state && v.state !== "ok") // recovered/ok → healthy, drop
-    .map(([peer, v]) => ({ peer, state: v.state, endpoint: v.endpoint }));
+  return [...latest].map(([peer, v]) => ({ peer, state: v.state, endpoint: v.endpoint, handshakeAge: v.handshakeAge }));
 }
 
 export function mockDaemon(): DaemonPeer[] {

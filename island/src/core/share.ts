@@ -39,6 +39,17 @@ export interface FileContent {
 }
 
 export class FileNotFound extends Error {}
+export class ShareQuotaExceeded extends Error {}
+
+/** Total share-size cap — a disk-fill DoS guard on the durable node (vega's SD card
+ *  also holds the DB, gate, and Llama). Configurable via ISLAND_SHARE_MAX_BYTES;
+ *  default 1 GiB — roomy for an island, small vs. the disk. */
+const DEFAULT_SHARE_MAX_BYTES = 1024 * 1024 * 1024;
+
+/** Timeout for a spoke's calls to vega's share. A hung relay (no response, not a
+ *  refusal) must not wedge a spoke's request handler forever — the mesh flaps.
+ *  Configurable via ISLAND_SHARE_TIMEOUT_MS. */
+const REMOTE_TIMEOUT_MS = Number(process.env.ISLAND_SHARE_TIMEOUT_MS) || 30_000;
 
 /** The island file-share surface. All three implementations satisfy it. */
 export interface FileShare {
@@ -67,6 +78,9 @@ function sanitizeFileName(raw: string): string {
 export class MemoryFileShare implements FileShare {
   private rows = new Map<number, SharedFile & { contentType?: string; content: Uint8Array }>();
   private nextId = 1;
+  private total = 0; // running sum of stored sizes, for the quota check
+
+  constructor(private readonly maxTotalBytes = DEFAULT_SHARE_MAX_BYTES) {}
 
   async list(): Promise<FilesSnapshot> {
     const files = [...this.rows.values()]
@@ -76,9 +90,11 @@ export class MemoryFileShare implements FileShare {
   }
 
   async add(name: string, content: Uint8Array, node: string, contentType?: string): Promise<SharedFile> {
+    if (this.total + content.length > this.maxTotalBytes) throw new ShareQuotaExceeded("share is full");
     const id = this.nextId++;
     const rec = { id, name: sanitizeFileName(name), size: content.length, node, modified: nowIso(), contentType, content };
     this.rows.set(id, rec);
+    this.total += content.length;
     return { id, name: rec.name, size: rec.size, node: rec.node, modified: rec.modified };
   }
 
@@ -89,7 +105,10 @@ export class MemoryFileShare implements FileShare {
   }
 
   async remove(id: number): Promise<void> {
-    if (!this.rows.delete(id)) throw new FileNotFound(`no file ${id}`);
+    const r = this.rows.get(id);
+    if (!r) throw new FileNotFound(`no file ${id}`);
+    this.total -= r.size;
+    this.rows.delete(id);
   }
 }
 
@@ -113,6 +132,7 @@ export class SqliteFileShare implements FileShare {
     path: string,
     private readonly rootLabel = "vega:island.db",
     private readonly bind = "wg0:8787",
+    private readonly maxTotalBytes = DEFAULT_SHARE_MAX_BYTES,
   ) {
     this.db = new Database(path);
     this.db.run(SCHEMA);
@@ -126,6 +146,8 @@ export class SqliteFileShare implements FileShare {
   }
 
   async add(name: string, content: Uint8Array, node: string, contentType?: string): Promise<SharedFile> {
+    const { total } = this.db.query("SELECT COALESCE(SUM(size), 0) AS total FROM files").get() as { total: number };
+    if (total + content.length > this.maxTotalBytes) throw new ShareQuotaExceeded("share is full");
     const safeName = sanitizeFileName(name);
     const modified = nowIso();
     const row = this.db
@@ -164,7 +186,7 @@ export class RemoteFileShare implements FileShare {
   }
 
   async list(): Promise<FilesSnapshot> {
-    const r = await fetch(`${this.base}/api/files`);
+    const r = await fetch(`${this.base}/api/files`, { signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS) });
     if (!r.ok) throw new Error(`remote list failed: ${r.status}`);
     return (await r.json()) as FilesSnapshot;
   }
@@ -175,13 +197,17 @@ export class RemoteFileShare implements FileShare {
     const form = new FormData();
     // vega's store sanitizes again on its own add(); cleaning here too keeps the wire name safe.
     form.append("file", new Blob([content], { type: contentType ?? "application/octet-stream" }), sanitizeFileName(name));
-    const r = await fetch(`${this.base}/api/files`, { method: "POST", body: form });
+    const r = await fetch(`${this.base}/api/files`, {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS),
+    });
     if (!r.ok) throw new Error(`remote add failed: ${r.status}`);
     return (await r.json()) as SharedFile;
   }
 
   async get(id: number): Promise<FileContent> {
-    const r = await fetch(`${this.base}/api/files/${id}/download`);
+    const r = await fetch(`${this.base}/api/files/${id}/download`, { signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS) });
     if (r.status === 404) throw new FileNotFound(`no file ${id}`);
     if (!r.ok) throw new Error(`remote get failed: ${r.status}`);
     return {
@@ -192,7 +218,10 @@ export class RemoteFileShare implements FileShare {
   }
 
   async remove(id: number): Promise<void> {
-    const r = await fetch(`${this.base}/api/files/${id}`, { method: "DELETE" });
+    const r = await fetch(`${this.base}/api/files/${id}`, {
+      method: "DELETE",
+      signal: AbortSignal.timeout(REMOTE_TIMEOUT_MS),
+    });
     if (r.status === 404) throw new FileNotFound(`no file ${id}`);
     if (!r.ok) throw new Error(`remote remove failed: ${r.status}`);
   }
@@ -201,11 +230,12 @@ export class RemoteFileShare implements FileShare {
 /** Select the share implementation from env (mirrors Phase One build_store). */
 export function buildShare(env: Record<string, string | undefined> = process.env): FileShare {
   const kind = env.ISLAND_SHARE ?? "memory";
+  const maxBytes = Number(env.ISLAND_SHARE_MAX_BYTES) || DEFAULT_SHARE_MAX_BYTES;
   switch (kind) {
     case "memory":
-      return new MemoryFileShare();
+      return new MemoryFileShare(maxBytes);
     case "sqlite":
-      return new SqliteFileShare(env.ISLAND_DB_PATH ?? "/var/lib/islandd/island.db");
+      return new SqliteFileShare(env.ISLAND_DB_PATH ?? "/var/lib/islandd/island.db", undefined, undefined, maxBytes);
     case "remote":
       return new RemoteFileShare(env.ISLAND_SHARE_URL ?? "");
     default:
